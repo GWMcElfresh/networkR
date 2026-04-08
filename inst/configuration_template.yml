@@ -1,0 +1,125 @@
+study:
+  studyName: "Example Bayesian Network Study"
+  randomSeed: 42
+
+data:
+  dataPath: "data_sheets"
+  filePattern: "[.](xlsx|csv)$"
+  idColumn: "SubjectId"
+  rawTimepointColumn: "TimepointLabel2"
+  analysisTimepointColumn: "Timepoint"
+  groupColumn: "GroupName"
+  protectionColumn: "Protection"
+  tissueColumn: "Tissue"
+  cellTypeColumn: "CellType"
+  fractionColumn: "Fraction"
+  cellTypePrefix: "Pct_"
+  tissueMap:
+    liver: "Liver"
+    pbmc: "PBMC"
+    bm: "BM"
+  cellTypeRenames:
+    - match: "Promyelocytes"
+      replace: "Neutrophils"
+      exceptTissue: "BM"
+
+variables:
+  exogenousVariables:
+    - "GroupName"
+    - "VaccinationStatus"
+    - "Timepoint"
+    - "Tissue"
+  stratifierVariables:
+    - "Protection"
+  derivedVariables:
+    VaccinationStatus:
+      type: "ifEquals"
+      sourceColumn: "GroupName"
+      equalsValue: "Control Animal"
+      trueValue: "Unvaccinated"
+      falseValue: "Vaccinated"
+    Protection:
+      type: "replaceTargetWhenEquals"
+      sourceColumn: "GroupName"
+      targetColumn: "Protection"
+      equalsValue: "Control Animal"
+      replacementValue: ~
+  measurementGroups:
+    - groupName: "pbmcCells"
+      columnPrefixes: ["PBMC_"]
+      tier: 2
+      fillColour: "lightblue"
+      borderColour: "steelblue"
+    - groupName: "liverCells"
+      columnPrefixes: ["Liver_"]
+      tier: 3
+      fillColour: "lightgreen"
+      borderColour: "darkgreen"
+    - groupName: "boneMarrowCells"
+      columnPrefixes: ["BM_"]
+      tier: 3
+      fillColour: "navajowhite"
+      borderColour: "sienna4"
+
+imputation:
+  method: "pmm"
+  numberOfImputations: 5
+  maximumIterations: 20
+  completeDataAction: 1
+  excludedPredictors:
+    - "SubjectId"
+    - "Protection"
+
+discretization:
+  method: "hartemink"
+  initialBreaks: 20
+  finalBreaks: 3
+  fallbackMethod: "quantile"
+  fallbackBreaks: 2
+
+structureLearning:
+  algorithms: ["hillClimbing", "tabu"]
+  score: "bic"
+  selectedBootstrapAlgorithm: "tabu"
+  bootstrapReplicates: 1000
+  averageNetworkThreshold: 0.4
+  parameterMethod: "bayes"
+  imaginarySampleSize: 1
+
+stratifications:
+  - analysisName: "exposure"
+    variableName: "GroupName"
+    levels: ["Malaria Preexposed", "Malaria Naive"]
+  - analysisName: "protection"
+    variableName: "Protection"
+    levels: ["Yes", "No"]
+    filters:
+      - column: "VaccinationStatus"
+        operator: "equals"
+        value: "Vaccinated"
+      - column: "Protection"
+        operator: "notMissing"
+
+plotting:
+  themeName: "article"
+  baseSize: 13
+  networkLayout: "fr"
+  edgeLabelThreshold: 0.2
+  comparisonBarThreshold: 0.15
+  groupColours:
+    exogenous:
+      fillColour: "mistyrose"
+      borderColour: "firebrick"
+    defaultMeasurement:
+      fillColour: "grey85"
+      borderColour: "grey30"
+  save:
+    width: 13
+    height: 8
+    dpi: 300
+    bg: "white"
+    device: "png"
+
+output:
+  savePlots: false
+  outputDirectory: "outputs"

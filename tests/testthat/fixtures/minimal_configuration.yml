@@ -1,0 +1,96 @@
+study:
+  studyName: "Fixture Study"
+  randomSeed: 42
+
+data:
+  dataPath: "data_sheets"
+  filePattern: "[.](csv)$"
+  idColumn: "SubjectId"
+  rawTimepointColumn: "TimepointLabel2"
+  analysisTimepointColumn: "Timepoint"
+  groupColumn: "GroupName"
+  protectionColumn: "Protection"
+  tissueColumn: "Tissue"
+  cellTypeColumn: "CellType"
+  fractionColumn: "Fraction"
+  cellTypePrefix: "Pct_"
+  tissueMap:
+    liver: "Liver"
+    pbmc: "PBMC"
+
+variables:
+  exogenousVariables: ["GroupName", "VaccinationStatus", "Timepoint", "Tissue"]
+  stratifierVariables: ["Protection"]
+  derivedVariables:
+    VaccinationStatus:
+      type: "ifEquals"
+      sourceColumn: "GroupName"
+      equalsValue: "Control Animal"
+      trueValue: "Unvaccinated"
+      falseValue: "Vaccinated"
+    Protection:
+      type: "replaceTargetWhenEquals"
+      sourceColumn: "GroupName"
+      targetColumn: "Protection"
+      equalsValue: "Control Animal"
+      replacementValue: ~
+  measurementGroups:
+    - groupName: "pbmcCells"
+      columnPrefixes: ["PBMC_"]
+      tier: 2
+      fillColour: "lightblue"
+      borderColour: "steelblue"
+    - groupName: "liverCells"
+      columnPrefixes: ["Liver_"]
+      tier: 3
+      fillColour: "lightgreen"
+      borderColour: "darkgreen"
+
+imputation:
+  method: "pmm"
+  numberOfImputations: 2
+  maximumIterations: 2
+  completeDataAction: 1
+  excludedPredictors: ["SubjectId", "Protection"]
+
+discretization:
+  method: "hartemink"
+  initialBreaks: 5
+  finalBreaks: 3
+  fallbackMethod: "quantile"
+  fallbackBreaks: 2
+
+structureLearning:
+  algorithms: ["tabu"]
+  score: "bic"
+  selectedBootstrapAlgorithm: "tabu"
+  bootstrapReplicates: 5
+  averageNetworkThreshold: 0.2
+  parameterMethod: "bayes"
+  imaginarySampleSize: 1
+
+stratifications: []
+
+plotting:
+  themeName: "article"
+  baseSize: 11
+  networkLayout: "fr"
+  edgeLabelThreshold: 0.2
+  comparisonBarThreshold: 0.15
+  groupColours:
+    exogenous:
+      fillColour: "mistyrose"
+      borderColour: "firebrick"
+    defaultMeasurement:
+      fillColour: "grey85"
+      borderColour: "grey30"
+  save:
+    width: 6
+    height: 4
+    dpi: 72
+    bg: "white"
+    device: "png"
+
+output:
+  savePlots: false
+  outputDirectory: "outputs"

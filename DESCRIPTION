@@ -1,0 +1,37 @@
+Package: networkR
+Title: Flexible Bayesian Network Pipelines for Experimental Studies
+Version: 0.0.0.9000
+Author: NetworkR Authors
+Maintainer: NetworkR Authors <packages@example.com>
+Description: Provides a configurable pipeline for Bayesian network structure
+    learning in factorial and repeated-measures studies. The package supports
+    panel ingestion, derived design variables, predictive mean matching
+    imputation, Hartemink discretization, blacklist construction, bootstrap
+    stability estimation, structure comparison, and ggraph-based network
+    visualization.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Depends:
+    R (>= 4.1)
+Imports:
+    bnlearn,
+    dplyr,
+    egg,
+    ggraph,
+    ggplot2,
+    ggrepel,
+    grid,
+    igraph,
+    mice,
+    readxl,
+    tidyr,
+    yaml
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0),
+    withr
+VignetteBuilder: knitr
+Config/testthat/edition: 3

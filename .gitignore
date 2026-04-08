@@ -1,0 +1,13 @@
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user
+.DS_Store
+*.html
+*.Rcheck/
+*.tar.gz
+coverage.xml
+docs/
+pkgdown/
+data_sheets/
+outputs/

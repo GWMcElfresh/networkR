@@ -1,0 +1,23 @@
+template:
+  bootstrap: 5
+
+reference:
+  - title: Configuration
+    contents:
+      - BuildConfiguration
+      - ParseConfiguration
+      - ValidateConfiguration
+  - title: Data Preparation
+    contents:
+      - ReadPanels
+      - AddDerivedVariables
+      - ImputeMeasurements
+      - DiscretizeMeasurements
+  - title: Network Analysis
+    contents:
+      - BuildBlacklist
+      - LearnBayesianNetwork
+      - CompareStructures
+      - PlotBayesianNetwork
+      - SavePlot
+      - RunPipeline

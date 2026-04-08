@@ -1,0 +1,848 @@
+---
+title: "Getting Started with networkR"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with networkR}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse  = TRUE,
+  comment   = "#>",
+  message   = FALSE,
+  warning   = FALSE,
+  fig.width  = 8,
+  fig.height = 5.5,
+  out.width  = "100%"
+)
+library(networkR)
+```
+
+## What this vignette does
+
+This vignette walks you through every stage of the `networkR` pipeline using
+**fully synthetic data** that mimics a multi-tissue malaria vaccine immunology study.
+No real data files are needed — the mock panels are generated inline and written to a
+temporary directory.  By the end you will have:
+
+- generated and inspected raw long-format flow-cytometry panels;
+- configured a pipeline for two tissue compartments and two stratifications;
+- traced data through imputation, discretization, and blacklist construction;
+- learned and plotted Bayesian network structure on the full cohort;
+- compared network structure between exposure groups (Malaria Preexposed vs. Naive) 
+  and between protection outcomes (Protected vs. Not protected).
+
+---
+
+## 1. Background: Bayesian Networks for immunology
+
+### 1.1 What is a Bayesian Network?
+
+A **Bayesian Network (BN)** is a probabilistic graphical model whose structure is a
+directed acyclic graph (DAG).  Each node $X_i$ represents a variable; each directed
+edge $X_j \to X_i$ encodes that $X_j$ is a direct probabilistic predictor of $X_i$
+after conditioning on all other parents.  The joint distribution factorises along
+the graph:
+
+$$P(X_1, \dots, X_n) = \prod_{i=1}^{n} P\!\left(X_i \mid \text{pa}(X_i)\right)$$
+
+where $\text{pa}(X_i)$ is the **parent set** of $X_i$.  Missing edges denote
+*conditional independence*: $X_i \perp\!\!\!\perp X_j \mid \{X_k : k \ne i, j\}$.  This
+makes BNs useful for teasing apart direct from indirect associations in high-dimensional
+immunological data.
+
+### 1.2 Variable tiers
+
+`networkR` formalises a **tier system** that encodes causal precedence between
+variable classes.  Arcs that would run from a lower-priority tier into a
+higher-priority tier are *blacklisted* before structure learning begins.
+
+| Tier | Variable class | Examples | Rationale |
+|------|----------------|---------|-----------|
+| 1 | Exogenous / design | `GroupName`, `VaccinationStatus`, `Timepoint`, `Tissue` | Fixed before any biological measurement |
+| 2 | Upstream tissue measurements | `Liver_Pct_*` | Liver is exposed to malaria parasites first |
+| 3 | Downstream tissue measurements | `PBMC_Pct_*`, `BM_Pct_*` | Systemic immunity reflects hepatic priming |
+
+Three blacklist components are constructed automatically:
+
+1. **Measurement → Exogenous** — no cellular proportion can cause a design variable.
+2. **Exogenous → Exogenous** — design factors are mutually independent by construction
+   (factorial design assumption; configurable).
+3. **Cross-tier (high tier → low tier)** — e.g. PBMC cells (tier 3) cannot be parents
+   of Liver cells (tier 2).
+
+### 1.3 Bootstrap stability and the averaged network
+
+Because the data are finite, a single structure-learning run is sensitive to sampling
+noise.  `networkR` uses **bootstrap resampling** (Friedman et al. 1999): $R$ bootstrap
+datasets are drawn and a network is learned on each.  The **arc stability** of an edge
+$A \to B$ is the fraction of bootstrap networks that contain $A \to B$ *or* $B \to A$
+(direction is assessed separately by the `direction` field of `boot.strength()`).
+
+The **averaged network** retains only arcs whose stability exceeds a threshold
+(default 0.40 for real studies; we use 0.20 here for the small demo dataset).
+
+### 1.4 Signed arc strength
+
+Raw bootstrap strength is unsigned.  `networkR` multiplies it by the sign of the
+Pearson correlation between the two nodes on continuous (pre-discretization) data,
+giving a **signed strength** $s$:
+
+$$s_{AB} = \text{sign}(r_{AB}) \times \hat{p}_{AB}$$
+
+where $\hat{p}_{AB}$ is bootstrap arc probability and $r_{AB}$ is Pearson $r$.
+The **delta** $\Delta = s_{\text{group}_1} - s_{\text{group}_2}$ summarises
+directional enrichment of an edge between two cohorts.
+
+---
+
+## 2. Mock data: a simulated malaria vaccine study
+
+### 2.1 Study design
+
+The simulated cohort has **24 subjects** divided into three experimental groups, each
+measured in two tissue compartments (Liver and PBMC) at a single timepoint (`D1`).
+This yields $24 \times 2 = 48$ rows in the joined subject table after `ReadPanels()`.
+
+```{r study-design-table, echo=FALSE}
+design_tbl <- data.frame(
+  Group              = c("Malaria Preexposed", "Malaria Naive", "Control Animal"),
+  n                  = c(8, 8, 8),
+  `Vaccination status` = c("Vaccinated", "Vaccinated", "Unvaccinated"),
+  `Protection outcome` = c("Yes / No (4 each)", "Yes / No (4 each)", "N/A"),
+  check.names = FALSE
+)
+knitr::kable(design_tbl, caption = "Simulated study design (24 subjects total)")
+```
+
+Subjects S01–S08 are Malaria Preexposed (vaccinated); S09–S16 are Malaria Naive
+(vaccinated); S17–S24 are Control Animals (unvaccinated, no protection outcome).
+This mirrors the original Malaria U01 trial structure that motivated the package.
+
+### 2.2 Data-generation helpers
+
+We simulate cell-type proportions using the **Dirichlet distribution**.  The
+group-specific concentration parameters $\boldsymbol{\alpha}$ encode biological
+signal: Preexposed animals have relatively elevated Kupffer cells (Liver) and CD8
+T cells (PBMC), while Control Animals have flatter distributions consistent with
+a naive systemic immune state.
+
+```{r helpers}
+# Dirichlet draw for a single observation.
+# Exploits: if G_i ~ Gamma(alpha_i, 1) then G / sum(G) ~ Dirichlet(alpha).
+rdirichlet_one <- function(alpha) {
+  raw <- vapply(alpha, function(a) stats::rgamma(1, shape = a, rate = 1), numeric(1))
+  raw / sum(raw)
+}
+
+# Build a long-format panel table (one row per subject × cell type).
+make_panel_long <- function(cell_types, alpha_by_group,
+                             subjects, groups, protection, seed) {
+  set.seed(seed)
+  rows <- lapply(seq_along(subjects), function(i) {
+    fracs <- rdirichlet_one(alpha_by_group[[groups[i]]])
+    data.frame(
+      SubjectId       = subjects[i],
+      TimepointLabel2 = "D1",
+      GroupName       = groups[i],
+      Protection      = protection[i],
+      CellType        = cell_types,
+      Fraction        = fracs,
+      stringsAsFactors = FALSE
+    )
+  })
+  do.call(rbind, rows)
+}
+```
+
+### 2.3 Generating the Liver panel
+
+Five liver cell types are simulated.  The Dirichlet $\boldsymbol{\alpha}$ shapes
+differ by group: Preexposed animals have a higher $\alpha$ for Kupffer Cells
+(resident macrophages that trap circulating malaria parasites), while Naive and
+Control animals show more uniform distributions.
+
+```{r liver-panel}
+# Subject metadata
+n_subjects      <- 24
+subject_ids     <- sprintf("S%02d", 1:n_subjects)
+group_labels    <- rep(c("Malaria Preexposed", "Malaria Naive", "Control Animal"), each = 8)
+protection_raw  <- c(
+  rep(c("Yes", "No"), each = 4),  # S01-S08 Preexposed: 4 protected, 4 not
+  rep(c("Yes", "No"), each = 4),  # S09-S16 Naive: 4 protected, 4 not
+  rep("No", 8)                    # S17-S24 Controls: placeholder → overwritten to NA
+)
+
+# Liver cell types and group-specific Dirichlet alpha vectors
+liver_cell_types <- c(
+  "Kupffer Cells", "CD8 T Cells", "NK Cells",
+  "Gamma Delta T Cells", "Conventional DC"
+)
+liver_alpha <- list(
+  "Malaria Preexposed" = c(5.0, 2.0, 2.0, 1.0, 0.8),  # elevated Kupffer + moderate NK
+  "Malaria Naive"      = c(2.0, 3.0, 3.0, 1.5, 0.5),  # elevated CD8 / NK
+  "Control Animal"     = c(1.0, 1.0, 2.5, 1.0, 0.5)   # relatively flat; more NK
+)
+
+liver_panel <- make_panel_long(
+  liver_cell_types, liver_alpha, subject_ids, group_labels, protection_raw, seed = 42
+)
+# Add ~10 % random missing values to simulate instrument dropouts
+set.seed(7)
+liver_panel$Fraction[sample(nrow(liver_panel), floor(nrow(liver_panel) * 0.10))] <- NA
+
+cat("Liver panel: ", nrow(liver_panel), "rows × ", ncol(liver_panel), "columns\n")
+cat("Missing Fraction values:", sum(is.na(liver_panel$Fraction)), "\n")
+```
+
+```{r liver-head, echo=FALSE}
+knitr::kable(
+  head(liver_panel[order(liver_panel$SubjectId, liver_panel$CellType), ], 10),
+  digits = 3,
+  caption = "First 10 rows of the raw Liver panel (long format)"
+)
+```
+
+### 2.4 Generating the PBMC panel
+
+```{r pbmc-panel}
+pbmc_cell_types <- c(
+  "CD14 Monocytes", "CD4 T Cells", "CD8 T Cells", "NK Cells", "B Cells"
+)
+pbmc_alpha <- list(
+  "Malaria Preexposed" = c(2.0, 2.0, 4.5, 2.0, 0.5),  # strong CD8 enrichment
+  "Malaria Naive"      = c(3.5, 3.0, 2.0, 2.0, 0.5),  # monocyte / CD4 skew
+  "Control Animal"     = c(4.5, 2.0, 1.0, 1.0, 0.5)   # monocyte dominated
+)
+
+pbmc_panel <- make_panel_long(
+  pbmc_cell_types, pbmc_alpha, subject_ids, group_labels, protection_raw, seed = 99
+)
+set.seed(8)
+pbmc_panel$Fraction[sample(nrow(pbmc_panel), floor(nrow(pbmc_panel) * 0.10))] <- NA
+
+cat("PBMC panel:", nrow(pbmc_panel), "rows × ", ncol(pbmc_panel), "columns\n")
+cat("Missing Fraction values:", sum(is.na(pbmc_panel$Fraction)), "\n")
+```
+
+### 2.5 Writing panels to disk
+
+`ReadPanels()` discovers files by globbing `dataPath` for filenames matching
+`filePattern`.  The tissue compartment is parsed from the filename: any file containing
+`"liver"` (case-insensitive) maps to the canonical label `"Liver"`.
+
+```{r write-panels}
+panel_dir <- file.path(tempdir(), "networkR_vignette_panels")
+dir.create(panel_dir, recursive = TRUE, showWarnings = FALSE)
+utils::write.csv(liver_panel, file.path(panel_dir, "liver_panel.csv"), row.names = FALSE)
+utils::write.csv(pbmc_panel,  file.path(panel_dir, "pbmc_panel.csv"),  row.names = FALSE)
+cat("Panel files written to:", panel_dir, "\n")
+list.files(panel_dir)
+```
+
+---
+
+## 3. Configuration
+
+### 3.1 Configuration concepts
+
+`networkR` is configured entirely through a named R list produced by
+`BuildConfiguration()` (or equivalently `ParseConfiguration()` for a YAML file).
+The configuration controls every stage of the pipeline:
+
+| Section | Key parameters |
+|---------|---------------|
+| `study` | `studyName`, `randomSeed` |
+| `data` | `dataPath`, `filePattern`, column name mappings, tissue map |
+| `variables` | `exogenousVariables`, `stratifierVariables`, `derivedVariables`, `measurementGroups` |
+| `imputation` | `method` (pmm), `numberOfImputations`, `maximumIterations` |
+| `discretization` | `method` (hartemink), `initialBreaks`, `finalBreaks`, `fallbackBreaks` |
+| `structureLearning` | `algorithms`, `bootstrapReplicates`, `averageNetworkThreshold` |
+| `stratifications` | List of cohort stratification definitions |
+| `plotting` | Layout, colours, sizes |
+| `output` | Save paths and file format |
+
+### 3.2 Building the vignette configuration
+
+We override only the parameters that differ from the package defaults.  Key demo
+choices: **50 bootstrap replicates** and **`averageNetworkThreshold = 0.2`** to ensure
+a non-trivial averaged network from a small dataset.  A real study should use
+$R \ge 1000$ replicates and `averageNetworkThreshold = 0.4`.
+
+```{r configuration}
+configuration <- BuildConfiguration(list(
+  study = list(
+    studyName  = "Malaria Vaccine Immunology — Demo Study",
+    randomSeed = 42
+  ),
+  data = list(
+    dataPath    = panel_dir,
+    filePattern = "[.](csv)$"
+  ),
+  variables = list(
+    measurementGroups = list(
+      list(
+        groupName      = "liverCells",
+        columnPrefixes = list("Liver_"),
+        tier           = 2,
+        fillColour     = "lightgreen",
+        borderColour   = "darkgreen"
+      ),
+      list(
+        groupName      = "pbmcCells",
+        columnPrefixes = list("PBMC_"),
+        tier           = 3,
+        fillColour     = "lightblue",
+        borderColour   = "steelblue"
+      )
+    )
+  ),
+  imputation = list(
+    numberOfImputations = 3,
+    maximumIterations   = 5
+  ),
+  structureLearning = list(
+    algorithms                 = list("tabu"),
+    selectedBootstrapAlgorithm = "tabu",
+    bootstrapReplicates        = 50,
+    averageNetworkThreshold    = 0.2
+  ),
+  stratifications = list(
+    list(
+      analysisName = "exposure",
+      variableName = "GroupName",
+      levels       = list("Malaria Preexposed", "Malaria Naive"),
+      filters      = list()
+    ),
+    list(
+      analysisName = "protection",
+      variableName = "Protection",
+      levels       = list("Yes", "No"),
+      filters      = list(
+        list(column = "VaccinationStatus", operator = "equals",    value = "Vaccinated"),
+        list(column = "Protection",        operator = "notMissing")
+      )
+    )
+  ),
+  output = list(savePlots = FALSE)
+))
+
+print(configuration)
+```
+
+A YAML file equivalent to the above is available at `system.file("configuration_template.yml", package = "networkR")`.
+
+---
+
+## 4. Running the full pipeline
+
+`RunPipeline()` is the one-call entry point.  It executes the complete chain —
+ingestion, derived-variable annotation, imputation, discretization, full-model
+structure learning, stratified sub-models, and pairwise structure comparisons —
+and returns a single `networkRPipelineResult` object containing every intermediate
+result and plot.
+
+```{r run-pipeline}
+set.seed(42)
+pipeline_result <- RunPipeline(configuration)
+print(pipeline_result)
+```
+
+The remainder of this vignette unpacks each component of `pipeline_result` in detail.
+
+---
+
+## 5. Panel ingestion
+
+### 5.1 How `ReadPanels()` works
+
+`ReadPanels()` discovers all files in `configuration$data$dataPath` whose names
+match `configuration$data$filePattern`.  For each file it:
+
+1. Reads the raw long-format table (xlsx or csv).
+2. Parses the tissue compartment from the filename using `configuration$data$tissueMap`.
+3. Renames `TimepointLabel2 → Timepoint` (or whatever your `rawTimepointColumn`/`analysisTimepointColumn` mapping specifies).
+4. Normalises `CellType` strings to valid column names and prefixes them with
+   `{Tissue}_{cellTypePrefix}` (e.g. `"Kupffer Cells"` → `"Liver_Pct_Kupffer_Cells"`).
+5. Pivots from long to wide, producing one subject × timepoint row per tissue panel.
+
+The individual pivoted tables are then **`full_join`-ed** on the shared key columns
+(`SubjectId`, `Timepoint`, `Tissue`, `Protection`, `GroupName`).  Because each panel
+has a *different* `Tissue` value, the join produces **one row per subject × tissue**:
+Liver rows carry `NA` in the `PBMC_` columns and vice versa.  This structural
+missingness is resolved in the imputation step.
+
+```{r ingestion-api, eval=FALSE}
+# The individual functions — equivalent to what RunPipeline calls internally:
+subject_table <- ReadPanels(configuration)
+subject_table <- AddDerivedVariables(subject_table, configuration)
+```
+
+### 5.2 The joined subject table
+
+```{r show-ingestion}
+st <- pipeline_result$subjectTable
+cat("Subject table dimensions:", nrow(st), "rows ×", ncol(st), "columns\n\n")
+
+# Column inventory
+meas_cols <- grep("^(Liver|PBMC)_", colnames(st), value = TRUE)
+cat("Measurement columns (", length(meas_cols), "):\n", sep = "")
+cat(paste(meas_cols, collapse = ", "), "\n\n")
+
+# Structural NA pattern
+na_counts <- colSums(is.na(st[, meas_cols]))
+cat("NA counts per measurement column:\n")
+print(na_counts)
+```
+
+```{r ingestion-head, echo=FALSE}
+display_cols <- c("SubjectId", "GroupName", "Tissue", "Protection",
+                  "VaccinationStatus", "Timepoint")
+knitr::kable(
+  head(st[, display_cols], 12),
+  caption = "First 12 rows of the joined subject table (design columns only)"
+)
+```
+
+Note the structural pattern: the first 8 rows all have `Tissue = "Liver"` — these
+are the 8 Preexposed subjects' Liver measurements.  Rows 25–48 (not shown) are the
+corresponding PBMC rows.
+
+### 5.3 Derived variables
+
+`AddDerivedVariables()` applies two rules defined in `configuration$variables$derivedVariables`:
+
+- **`VaccinationStatus`** (`ifEquals`): set to `"Unvaccinated"` when `GroupName == "Control Animal"`, otherwise `"Vaccinated"`.
+- **`Protection`** (`replaceTargetWhenEquals`): overwrite `Protection` with `NA` when
+  `GroupName == "Control Animal"`.  The raw CSV value for controls is irrelevant.
+
+```{r derived-vars}
+cat("VaccinationStatus distribution:\n")
+print(table(st$VaccinationStatus, useNA = "ifany"))
+cat("\nProtection distribution:\n")
+print(table(st$Protection, useNA = "ifany"))
+```
+
+---
+
+## 6. Missing-data imputation
+
+### 6.1 MICE and predictive mean matching
+
+All missing values in the measurement columns are imputed before structure learning.
+`networkR` uses **Multiple Imputation by Chained Equations (MICE)** with
+**predictive mean matching** (`method = "pmm"` by default).  PMM preserves the
+empirical marginal distribution of each variable: the imputed value is always a
+real observed value from a donor matched on predicted values.
+
+If MICE fails (e.g. too few rows relative to predictors in a small sub-cohort),
+`ImputeMeasurements()` automatically falls back to **column-wise median imputation**
+and emits a warning.
+
+```{r imputation-api, eval=FALSE}
+# Equivalent single-step call:
+imputation_result <- ImputeMeasurements(pipeline_result$subjectTable, configuration)
+```
+
+### 6.2 Imputation result
+
+```{r show-imputation}
+ir <- pipeline_result$imputationResult
+
+cat("Measurement columns imputed (", length(ir$measurementColumns), "):\n", sep = "")
+cat(paste(ir$measurementColumns, collapse = "\n"), "\n\n")
+
+# NA counts before vs. after
+n_na_before <- sum(is.na(pipeline_result$subjectTable[, ir$measurementColumns]))
+n_na_after  <- sum(is.na(ir$continuousAnalysisData[, ir$measurementColumns]))
+cat("NAs before imputation:", n_na_before, "\n")
+cat("NAs after  imputation:", n_na_after,  "\n\n")
+
+cat("Active exogenous variables:", paste(ir$exogenousVariables, collapse = ", "), "\n")
+cat("Stratifier variables (not imputed):", paste(ir$stratifierVariables, collapse = ", "), "\n")
+```
+
+The `continuousAnalysisData` slot holds the imputed continuous values (used later
+for computing signed arc strengths via Pearson correlations).  The `imputedData`
+slot holds the same values plus the subject-level metadata columns.
+
+---
+
+## 7. Discretization
+
+### 7.1 Hartemink's algorithm
+
+Bayesian network score functions for categorical variables require discrete (factor)
+inputs.  `networkR` uses **Hartemink's pairwise mutual-information algorithm**
+(`bnlearn::discretize(method = "hartemink")`) to choose cut points that maximise
+the pairwise mutual information across all pairs of measurement variables jointly.
+This is preferable to per-column quantile binning because it is sensitive to the
+covariance structure of the data.
+
+The algorithm requires sufficient within-cell counts for an initial $q$-quantile
+preprocessing pass (`initialBreaks = 20` by default).  Columns that cannot satisfy
+this requirement (too few distinct values or too few rows) are routed to a
+**quantile-based fallback** (`fallbackBreaks = 2`), which simply splits at the median.
+
+```{r discretization-api, eval=FALSE}
+# Equivalent:
+discretization_result <- DiscretizeMeasurements(imputation_result, configuration)
+```
+
+### 7.2 Column routing
+
+```{r show-discretization}
+dr <- pipeline_result$discretizationResult
+
+cat("Total measurement columns:", length(dr$measurementColumns), "\n")
+cat("Hartemink columns (", length(dr$harteminkColumns), "):\n", sep = "")
+cat(paste(dr$harteminkColumns, collapse = "\n"), "\n\n")
+
+if (length(dr$fallbackColumns) > 0) {
+  cat("Fallback columns (", length(dr$fallbackColumns), "):\n", sep = "")
+  cat(paste(dr$fallbackColumns, collapse = "\n"), "\n")
+} else {
+  cat("Fallback columns: none — all columns passed the Hartemink pre-check.\n")
+}
+```
+
+### 7.3 Discrete factor levels
+
+After discretization every measurement column is an ordered factor with
+`finalBreaks = 3` levels by default.  The Hartemink algorithm determines
+cut points jointly; levels are labelled `1`, `2`, `3` (low to high within each
+column's marginal distribution).
+
+```{r show-factor-levels}
+first_three <- dr$measurementColumns[1:3]
+lvl_display <- lapply(first_three, function(cn) {
+  x <- dr$discreteData[[cn]]
+  data.frame(
+    variable = cn,
+    `n levels` = nlevels(x),
+    levels = paste(levels(x), collapse = " / "),
+    check.names = FALSE
+  )
+})
+knitr::kable(do.call(rbind, lvl_display), caption = "Factor levels for first three measurement columns")
+```
+
+```{r show-discrete-head, echo=FALSE}
+knitr::kable(
+  head(dr$discreteData[, c("GroupName", "Tissue", first_three)], 8),
+  caption = "First 8 rows of discrete data (design + first three measurement columns)"
+)
+```
+
+---
+
+## 8. Blacklist construction
+
+### 8.1 The three blacklist components
+
+`BuildBlacklist()` assembles a `data.frame` of forbidden arcs (`from`, `to`) from
+three sources:
+
+1. **Measurement → Exogenous**: Every arc from any measurement column into any active
+   exogenous variable is forbidden (cellular proportions cannot *cause* group assignments).
+2. **Exogenous → Exogenous**: Arcs between exogenous variables are forbidden (factorial
+   design assumption — modify if your exogenous variables are correlated).
+3. **Tier cross-arcs**: Arcs from measurement group $A$ into measurement group $B$ are
+   forbidden whenever $\text{tier}(A) > \text{tier}(B)$ — i.e. downstream-tissue cells
+   (PBMC, tier 3) cannot be parents of upstream-tissue cells (Liver, tier 2).
+
+```{r blacklist-api, eval=FALSE}
+# Equivalent:
+blacklist_result <- BuildBlacklist(discretization_result, configuration)
+```
+
+### 8.2 Examining the blacklist
+
+```{r show-blacklist}
+bl <- pipeline_result$fullModelResult$blacklist
+
+cat("Total blacklisted arcs:", nrow(bl), "\n\n")
+
+# Breakdown by arc category
+is_exo_src <- bl$from %in% pipeline_result$fullModelResult$activeExogenousVariables
+is_exo_tgt <- bl$to   %in% pipeline_result$fullModelResult$activeExogenousVariables
+
+cat("Arcs blocked: measurement → exogenous: ",
+    sum(!is_exo_src &  is_exo_tgt), "\n",
+    "Arcs blocked: exogenous → exogenous:  ",
+    sum( is_exo_src &  is_exo_tgt), "\n",
+    "Arcs blocked: high-tier → low-tier:   ",
+    sum(!is_exo_src & !is_exo_tgt), "\n", sep = "")
+```
+
+```{r blacklist-head, echo=FALSE}
+knitr::kable(
+  head(bl, 15),
+  caption = "First 15 rows of the blacklist (from → to arcs that cannot exist)"
+)
+```
+
+---
+
+## 9. Structure learning
+
+### 9.1 Tabu search
+
+`networkR` supports Hill-Climbing (`"hillClimbing"`) and **Tabu search** (`"tabu"`)
+for score-based BN structure learning.  Tabu search augments greedy hill-climbing
+with a recency memory (the *tabu list*) that forbids recently reversed moves,
+helping it escape local optima.  Both algorithms optimise the **BIC score** for
+discrete data by default.
+
+After learning the single best-scoring network on the full dataset, `networkR`
+runs **bootstrap resampling**: it draws $R$ datasets with replacement and re-runs
+Tabu search on each, then aggregates arc frequencies into a `boot.strength` table.
+
+```{r structure-api, eval=FALSE}
+# Equivalent:
+structure_result <- LearnBayesianNetwork(discretization_result, configuration)
+```
+
+### 9.2 BIC score
+
+```{r show-bic}
+sr <- pipeline_result$fullModelResult
+cat("BIC scores by algorithm:\n")
+print(round(sr$networkScores, 2))
+```
+
+### 9.3 Bootstrap arc strength
+
+Each row in the `bootstrapStrength` table is a directed arc (`from → to`) and its
+estimated stability (`strength`) and direction probability (`direction`).  We sort
+by stability descending to see the most robustly supported edges.
+
+```{r show-bootstrap}
+bs <- as.data.frame(sr$bootstrapStrength)
+bs <- bs[order(-bs$strength), ]
+knitr::kable(
+  head(bs, 15),
+  digits = 3,
+  row.names = FALSE,
+  caption = "Top 15 arcs by bootstrap stability (strength = fraction of bootstrap networks containing the arc)"
+)
+```
+
+### 9.4 The averaged network
+
+The averaged network retains only arcs whose stability exceeds
+`averageNetworkThreshold` (here 0.20).  This is the network visualized and compared
+downstream.
+
+```{r show-averaged-network}
+cat("Averaged network threshold:", sr$threshold, "\n\n")
+avg_arcs <- bnlearn::arcs(sr$averagedNetwork)
+cat("Arcs in the averaged network (", nrow(avg_arcs), "):\n", sep = "")
+if (nrow(avg_arcs) > 0) {
+  knitr::kable(avg_arcs, row.names = FALSE)
+} else {
+  cat("No arcs exceeded the threshold — try lowering averageNetworkThreshold.\n")
+}
+```
+
+---
+
+## 10. Network visualization
+
+`PlotBayesianNetwork()` renders the averaged network using `ggraph` with a
+Fruchterman-Reingold (`"fr"`) force-directed layout.  Node colours encode
+membership in a measurement group or exogenous category; edge width and
+transparency encode bootstrap stability.
+
+**Node colour scheme for this demo:**
+
+| Node type | Fill | Border |
+|-----------|------|--------|
+| Exogenous variables | mistyrose | firebrick |
+| Liver cells (`liverCells`) | lightgreen | darkgreen |
+| PBMC cells (`pbmcCells`) | lightblue | steelblue |
+
+```{r plot-full-network, fig.width=9.5, fig.height=7}
+pipeline_result$plotObjects$fullModel
+```
+
+Wider edges and more opaque edges indicate higher bootstrap stability.  The node
+layout is stochastic (force-directed); run with `set.seed()` before
+`PlotBayesianNetwork()` for a reproducible layout.
+
+---
+
+## 11. Stratified analysis
+
+### 11.1 Exposure stratification: Malaria Preexposed vs. Naive
+
+`RunPipeline()` runs a separate BN on each stratum defined in
+`configuration$stratifications`.  For the `"exposure"` stratification, rows are
+partitioned by `GroupName` into `"Malaria Preexposed"` and `"Malaria Naive"`
+sub-cohorts (8 subjects × 2 tissues = 16 rows each).
+
+```{r plot-preexposed, fig.width=9.5, fig.height=7}
+pipeline_result$plotObjects$stratifiedModels$exposure$levelPlots[["Malaria Preexposed"]]
+```
+
+```{r plot-naive, fig.width=9.5, fig.height=7}
+pipeline_result$plotObjects$stratifiedModels$exposure$levelPlots[["Malaria Naive"]]
+```
+
+### 11.2 Exposure comparison plot
+
+The comparison scatter plot places **signed bootstrap strength** for Group 1
+(Malaria Preexposed) on the y-axis and Group 2 (Malaria Naive) on the x-axis.
+Each point is one edge from the union of both groups' bootstrap tables.
+
+- **On the identity line** ($y = x$): equally strong in both groups.
+- **Above the identity line**: stronger (or in a different direction) in Preexposed.
+- **Below the identity line**: stronger in Naive.
+
+Points with $|\Delta| >$ `edgeLabelThreshold` are labelled.  Note that with only
+16 subjects per stratum, many edges will have low and similar bootstrap strength —
+a real-study comparison plot based on $n \approx 30+$ per stratum is far more
+discriminating.
+
+```{r plot-exposure-comparison, fig.width=8.5, fig.height=6}
+pipeline_result$plotObjects$stratifiedModels$exposure$comparisonPlots[["Malaria Preexposed_vs_Malaria Naive"]]
+```
+
+### 11.3 Comparison table
+
+The underlying data for the comparison plot are in the `comparisons` list.
+
+```{r comparison-table}
+comp <- pipeline_result$plotObjects$stratifiedModels$exposure$comparisons
+comp_tbl <- comp[["Malaria Preexposed_vs_Malaria Naive"]]$comparisonTable
+
+knitr::kable(
+  head(comp_tbl[order(-comp_tbl$absoluteDelta), ], 10),
+  digits = 3,
+  row.names = FALSE,
+  caption = "Top 10 edges ranked by |delta| — Malaria Preexposed vs. Naive"
+)
+```
+
+Column definitions:
+
+| Column | Meaning |
+|--------|---------|
+| `edge` | Undirected edge (alphabetical node order) |
+| `firstStrength` | Raw bootstrap stability in Malaria Preexposed |
+| `secondStrength` | Raw bootstrap stability in Malaria Naive |
+| `firstSignedStrength` | `sign(r) × stability` in Malaria Preexposed |
+| `secondSignedStrength` | `sign(r) × stability` in Malaria Naive |
+| `delta` | `firstSignedStrength − secondSignedStrength` |
+| `absoluteDelta` | `|delta|` (magnitude of difference) |
+| `direction` | "Stronger in {group}" / "Similar" |
+| `edgeType` | Edge category (exogenous-measurement, intra-tier, cross-tier) |
+
+### 11.4 Protection stratification: Protected vs. Not protected
+
+Only **vaccinated** subjects with a **non-missing** protection outcome are eligible.
+This filters to S01–S16 (16 subjects), partitioned by `Protection` (8 "Yes", 8 "No").
+
+```{r plot-protection-yes, fig.width=9.5, fig.height=7}
+pipeline_result$plotObjects$stratifiedModels$protection$levelPlots[["Yes"]]
+```
+
+```{r plot-protection-comparison, fig.width=8.5, fig.height=6}
+pipeline_result$plotObjects$stratifiedModels$protection$comparisonPlots[["Yes_vs_No"]]
+```
+
+---
+
+## 12. Interpreting results
+
+### 12.1 Reading bootstrap strength
+
+| Strength | Interpretation |
+|----------|---------------|
+| < 0.10 | Unreliable — likely noise |
+| 0.10–0.25 | Weak evidence; below typical thresholds |
+| 0.25–0.50 | Moderate evidence; worth investigating |
+| ≥ 0.50 | Strong evidence of a conditional dependency |
+| ≥ 0.80 | Very strong; edge present in the majority of bootstrap networks |
+
+The recommended production threshold for the **averaged network** is **0.40**.  We
+use 0.20 in this vignette only because the demo dataset is deliberately small.
+
+### 12.2 Signed strength and the delta score
+
+Raw bootstrap strength is non-negative.  Multiplying by $\text{sign}(r)$ gives
+**signed strength**, which captures whether the dependency is positive or negative
+(e.g. a consistent *inverse* co-variation between two cell types has $r < 0$ and
+therefore negative signed strength despite potentially high bootstrap stability).
+
+The **delta** $\Delta = s_1 - s_2$ quantifies differential connectivity:
+
+- **Large positive $\Delta$**: edge is stronger/more positive in Group 1.
+- **Large negative $\Delta$**: edge is stronger/more positive in Group 2.
+- **$|\Delta|$ near zero**: edge is similar across groups, or absent in both.
+
+The default labelling threshold (`edgeLabelThreshold`) is **0.20** — only edges
+with $|\Delta| > 0.20$ receive labels in the comparison scatter plot.
+
+### 12.3 Edge types
+
+`classify_edge_type()` assigns each edge in the comparison table to one of the
+following categories:
+
+| Edge type | Example | Biological meaning |
+|-----------|---------|-------------------|
+| `exo-measurement` | `GroupName → Liver_Pct_Kupffer_Cells` | Treatment group predicts cell fraction |
+| `within-tier` | `Liver_Pct_NK_Cells → Liver_Pct_CD8_T_Cells` | Co-variation within a tissue |
+| `cross-tier` | `Liver_Pct_Kupffer_Cells → PBMC_Pct_CD8_T_Cells` | Hepatic state predicts systemic immunity |
+| `exo-exo` | Blacklisted; should not appear | — |
+
+Cross-tier edges are the most biologically interesting because they encode inferred
+information flow between tissue compartments.
+
+### 12.4 Important caveats
+
+1. **Conditional independence ≠ causation.** A DAG edge $A \to B$ means only that
+   $A$ is a direct conditional predictor of $B$ in the model.  Causal interpretation
+   requires additional domain assumptions and experimental validation.
+2. **Small samples inflate bootstrap instability.** With $n < 20$ per stratum, many
+   edges will have stability < 0.30 regardless of the true underlying structure.
+3. **Imputed cross-tissue values.** Because each row corresponds to one tissue, MICE
+   imputes the *other* tissue's columns for every row.  Tissue acts as a predictor in
+   MICE, so imputed values are informed by tissue identity, but they approximate the
+   within-subject cross-tissue correlation only probabilistically.
+4. **Discretization destroys some signal.** Three-level discretization loses
+   continuous variation.  Edges between variables with complex non-linear relationships
+   may be missed or artificially strengthened.
+
+### 12.5 Recommended production settings
+
+```{r production-settings, eval=FALSE}
+# Production-grade overrides — replace the demo values above
+production_overrides <- list(
+  structureLearning = list(
+    bootstrapReplicates     = 1000,   # Friedman et al. recommend R >= 200, ideally >= 500
+    averageNetworkThreshold = 0.40    # Conservative; increases edge specificity
+  ),
+  imputation = list(
+    numberOfImputations = 5,          # Standard MICE recommendation
+    maximumIterations   = 20
+  ),
+  discretization = list(
+    initialBreaks = 20,               # Default; adequate for n >= 30
+    finalBreaks   = 3
+  )
+)
+```
+
+With $n \approx 50$+ per sub-cohort and 1 000 bootstrap replicates, a full pipeline
+run typically completes in 5–15 minutes on a modern laptop.
+
+---
+
+## Session information
+
+```{r session-info}
+sessionInfo()
+```
