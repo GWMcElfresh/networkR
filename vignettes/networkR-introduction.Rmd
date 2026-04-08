@@ -119,7 +119,6 @@ knitr::kable(design_tbl, caption = "Simulated study design (24 subjects total)")
 
 Subjects S01–S08 are Malaria Preexposed (vaccinated); S09–S16 are Malaria Naive
 (vaccinated); S17–S24 are Control Animals (unvaccinated, no protection outcome).
-This mirrors the original Malaria U01 trial structure that motivated the package.
 
 ### 2.2 Data-generation helpers
 
@@ -161,7 +160,7 @@ make_panel_long <- function(cell_types, alpha_by_group,
 
 Five liver cell types are simulated.  The Dirichlet $\boldsymbol{\alpha}$ shapes
 differ by group: Preexposed animals have a higher $\alpha$ for Kupffer Cells
-(resident macrophages that trap circulating malaria parasites), while Naive and
+(resident macrophages that capture malaria parasites), while Naive and
 Control animals show more uniform distributions.
 
 ```{r liver-panel}
