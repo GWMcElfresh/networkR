@@ -29,8 +29,10 @@ test_that("ReadPanels reads and joins panel tables", {
   subject_table <- ReadPanels(configuration)
   subject_table <- AddDerivedVariables(subject_table, configuration)
 
-  expect_true(nrow(subject_table) > 0)
+  expect_equal(nrow(subject_table), 8)
   expect_true("VaccinationStatus" %in% colnames(subject_table))
+  expect_false("Tissue" %in% colnames(subject_table))
   expect_true(any(grepl("^Liver_", colnames(subject_table))))
   expect_true(any(grepl("^PBMC_", colnames(subject_table))))
+  expect_false(anyNA(subject_table[, grep("^(Liver|PBMC)_", colnames(subject_table), value = TRUE), drop = FALSE]))
 })

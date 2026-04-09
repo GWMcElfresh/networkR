@@ -1,9 +1,8 @@
 # networkR
 
 `networkR` is an R package scaffold for configurable Bayesian network analysis in
-factorial and repeated-measures studies. It extracts the main ideas from the
-current [Malaria_U01_BayesianNetwork.Rmd](Malaria_U01_BayesianNetwork.Rmd) and
-turns them into reusable package functions.
+factorial and repeated-measures studies. I intend to extend this to gaussian copulas/other graphical models, but for now, just Bayesian networks. 
+
 
 ## Current scope
 

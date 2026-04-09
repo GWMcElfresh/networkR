@@ -19,7 +19,7 @@ data:
     pbmc: "PBMC"
 
 variables:
-  exogenousVariables: ["GroupName", "VaccinationStatus", "Timepoint", "Tissue"]
+  exogenousVariables: ["GroupName", "VaccinationStatus", "Timepoint"]
   stratifierVariables: ["Protection"]
   derivedVariables:
     VaccinationStatus:
@@ -35,16 +35,16 @@ variables:
       equalsValue: "Control Animal"
       replacementValue: ~
   measurementGroups:
-    - groupName: "pbmcCells"
-      columnPrefixes: ["PBMC_"]
-      tier: 2
-      fillColour: "lightblue"
-      borderColour: "steelblue"
     - groupName: "liverCells"
       columnPrefixes: ["Liver_"]
-      tier: 3
+      tier: 2
       fillColour: "lightgreen"
       borderColour: "darkgreen"
+    - groupName: "pbmcCells"
+      columnPrefixes: ["PBMC_"]
+      tier: 3
+      fillColour: "lightblue"
+      borderColour: "steelblue"
 
 imputation:
   method: "pmm"

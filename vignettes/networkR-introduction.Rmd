@@ -61,7 +61,7 @@ higher-priority tier are *blacklisted* before structure learning begins.
 
 | Tier | Variable class | Examples | Rationale |
 |------|----------------|---------|-----------|
-| 1 | Exogenous / design | `GroupName`, `VaccinationStatus`, `Timepoint`, `Tissue` | Fixed before any biological measurement |
+| 1 | Exogenous / design | `GroupName`, `VaccinationStatus`, `Timepoint` | Fixed before any biological measurement |
 | 2 | Upstream tissue measurements | `Liver_Pct_*` | Liver is exposed to malaria parasites first |
 | 3 | Downstream tissue measurements | `PBMC_Pct_*`, `BM_Pct_*` | Systemic immunity reflects hepatic priming |
 
@@ -72,6 +72,12 @@ Three blacklist components are constructed automatically:
    (factorial design assumption; configurable).
 3. **Cross-tier (high tier → low tier)** — e.g. PBMC cells (tier 3) cannot be parents
    of Liver cells (tier 2).
+
+Compartment identity is encoded structurally through the measurement column prefixes
+and `measurementGroups` definitions, not as a separate row-level `Tissue` node.
+That lets the network learn within- and cross-compartment relationships from
+paired subject-level measurements while still using measurement groups for node
+colouring and tier-aware blacklist construction.
 
 ### 1.3 Bootstrap stability and the averaged network
 
@@ -104,7 +110,8 @@ directional enrichment of an edge between two cohorts.
 
 The simulated cohort has **24 subjects** divided into three experimental groups, each
 measured in two tissue compartments (Liver and PBMC) at a single timepoint (`D1`).
-This yields $24 \times 2 = 48$ rows in the joined subject table after `ReadPanels()`.
+This yields **24 rows** in the joined subject table after `ReadPanels()` — one row
+per subject, with Liver and PBMC features occupying separate column groups.
 
 ```{r study-design-table, echo=FALSE}
 design_tbl <- data.frame(
@@ -368,10 +375,11 @@ match `configuration$data$filePattern`.  For each file it:
 5. Pivots from long to wide, producing one subject × timepoint row per tissue panel.
 
 The individual pivoted tables are then **`full_join`-ed** on the shared key columns
-(`SubjectId`, `Timepoint`, `Tissue`, `Protection`, `GroupName`).  Because each panel
-has a *different* `Tissue` value, the join produces **one row per subject × tissue**:
-Liver rows carry `NA` in the `PBMC_` columns and vice versa.  This structural
-missingness is resolved in the imputation step.
+(`SubjectId`, `Timepoint`, `Protection`, `GroupName`).  Because tissue identity
+already lives in the measurement column prefixes, the join produces **one row per
+subject** with both `Liver_` and `PBMC_` columns aligned side by side.  Missing values
+after the join therefore reflect genuine assay dropouts rather than a structural
+cross-tissue design artifact.
 
 ```{r ingestion-api, eval=FALSE}
 # The individual functions — equivalent to what RunPipeline calls internally:
@@ -390,14 +398,14 @@ meas_cols <- grep("^(Liver|PBMC)_", colnames(st), value = TRUE)
 cat("Measurement columns (", length(meas_cols), "):\n", sep = "")
 cat(paste(meas_cols, collapse = ", "), "\n\n")
 
-# Structural NA pattern
+# Measurement missingness pattern
 na_counts <- colSums(is.na(st[, meas_cols]))
 cat("NA counts per measurement column:\n")
 print(na_counts)
 ```
 
 ```{r ingestion-head, echo=FALSE}
-display_cols <- c("SubjectId", "GroupName", "Tissue", "Protection",
+display_cols <- c("SubjectId", "GroupName", "Protection",
                   "VaccinationStatus", "Timepoint")
 knitr::kable(
   head(st[, display_cols], 12),
@@ -405,9 +413,10 @@ knitr::kable(
 )
 ```
 
-Note the structural pattern: the first 8 rows all have `Tissue = "Liver"` — these
-are the 8 Preexposed subjects' Liver measurements.  Rows 25–48 (not shown) are the
-corresponding PBMC rows.
+Each row now represents one subject-timepoint observation with both tissue
+compartments present as separate feature blocks.  In this synthetic example, any
+remaining `NA` values in the measurement columns arise from the simulated assay
+dropouts we injected into the raw panels.
 
 ### 5.3 Derived variables
 
@@ -435,6 +444,11 @@ All missing values in the measurement columns are imputed before structure learn
 **predictive mean matching** (`method = "pmm"` by default).  PMM preserves the
 empirical marginal distribution of each variable: the imputed value is always a
 real observed value from a donor matched on predicted values.
+
+Because the joined analysis table is now **subject-level**, all compartments for a
+given subject sit in the same row.  MICE therefore uses real paired cross-compartment
+measurements as predictors when filling assay dropouts, rather than reconstructing an
+entire missing tissue block from a row-level `Tissue` indicator.
 
 If MICE fails (e.g. too few rows relative to predictors in a small sub-cohort),
 `ImputeMeasurements()` automatically falls back to **column-wise median imputation**
@@ -530,7 +544,7 @@ knitr::kable(do.call(rbind, lvl_display), caption = "Factor levels for first thr
 
 ```{r show-discrete-head, echo=FALSE}
 knitr::kable(
-  head(dr$discreteData[, c("GroupName", "Tissue", first_three)], 8),
+  head(dr$discreteData[, c("GroupName", first_three)], 8),
   caption = "First 8 rows of discrete data (design + first three measurement columns)"
 )
 ```
@@ -680,7 +694,7 @@ layout is stochastic (force-directed); run with `set.seed()` before
 `RunPipeline()` runs a separate BN on each stratum defined in
 `configuration$stratifications`.  For the `"exposure"` stratification, rows are
 partitioned by `GroupName` into `"Malaria Preexposed"` and `"Malaria Naive"`
-sub-cohorts (8 subjects × 2 tissues = 16 rows each).
+sub-cohorts (8 subjects = 8 rows each).
 
 ```{r plot-preexposed, fig.width=9.5, fig.height=7}
 pipeline_result$plotObjects$stratifiedModels$exposure$levelPlots[["Malaria Preexposed"]]
@@ -701,7 +715,7 @@ Each point is one edge from the union of both groups' bootstrap tables.
 - **Below the identity line**: stronger in Naive.
 
 Points with $|\Delta| >$ `edgeLabelThreshold` are labelled.  Note that with only
-16 subjects per stratum, many edges will have low and similar bootstrap strength —
+8 subjects per stratum, many edges will have low and similar bootstrap strength —
 a real-study comparison plot based on $n \approx 30+$ per stratum is far more
 discriminating.
 
@@ -737,7 +751,7 @@ Column definitions:
 | `delta` | `firstSignedStrength − secondSignedStrength` |
 | `absoluteDelta` | `|delta|` (magnitude of difference) |
 | `direction` | "Stronger in {group}" / "Similar" |
-| `edgeType` | Edge category (exogenous-measurement, intra-tier, cross-tier) |
+| `edgeType` | Edge category (`Exogenous to measurement`, `Within {groupName}`, `Cross-compartment`) |
 
 ### 11.4 Protection stratification: Protected vs. Not protected
 
@@ -792,12 +806,12 @@ following categories:
 
 | Edge type | Example | Biological meaning |
 |-----------|---------|-------------------|
-| `exo-measurement` | `GroupName → Liver_Pct_Kupffer_Cells` | Treatment group predicts cell fraction |
-| `within-tier` | `Liver_Pct_NK_Cells → Liver_Pct_CD8_T_Cells` | Co-variation within a tissue |
-| `cross-tier` | `Liver_Pct_Kupffer_Cells → PBMC_Pct_CD8_T_Cells` | Hepatic state predicts systemic immunity |
-| `exo-exo` | Blacklisted; should not appear | — |
+| `Exogenous to measurement` | `GroupName → Liver_Pct_Kupffer_Cells` | Treatment group predicts cell fraction |
+| `Within liverCells` / `Within pbmcCells` | `Liver_Pct_NK_Cells → Liver_Pct_CD8_T_Cells` | Co-variation within a compartment |
+| `Cross-compartment` | `Liver_Pct_Kupffer_Cells → PBMC_Pct_CD8_T_Cells` | Hepatic state predicts systemic immunity |
+| `Exogenous to exogenous` | Blacklisted; should not appear | — |
 
-Cross-tier edges are the most biologically interesting because they encode inferred
+Cross-compartment edges are the most biologically interesting because they encode inferred
 information flow between tissue compartments.
 
 ### 12.4 Important caveats
@@ -807,10 +821,10 @@ information flow between tissue compartments.
    requires additional domain assumptions and experimental validation.
 2. **Small samples inflate bootstrap instability.** With $n < 20$ per stratum, many
    edges will have stability < 0.30 regardless of the true underlying structure.
-3. **Imputed cross-tissue values.** Because each row corresponds to one tissue, MICE
-   imputes the *other* tissue's columns for every row.  Tissue acts as a predictor in
-   MICE, so imputed values are informed by tissue identity, but they approximate the
-   within-subject cross-tissue correlation only probabilistically.
+3. **Cross-compartment inference still depends on missing-data handling.** Each row now
+  contains real paired Liver and PBMC measurements for the same subject, so MICE uses
+  genuine within-subject cross-compartment information when filling assay dropouts.
+  Any imputed values reflect assay failure, not a structurally absent tissue block.
 4. **Discretization destroys some signal.** Three-level discretization loses
    continuous variation.  Edges between variables with complex non-linear relationships
    may be missed or artificially strengthened.

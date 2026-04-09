@@ -62,6 +62,30 @@ find_active_exogenous_variables <- function(data_frame, candidate_names) {
   }, logical(1))]
 }
 
+find_active_measurement_columns <- function(data_frame, candidate_names) {
+  candidate_names[vapply(candidate_names, function(column_name) {
+    if (!column_name %in% colnames(data_frame)) {
+      return(FALSE)
+    }
+
+    column_values <- data_frame[[column_name]]
+    if (is.factor(column_values)) {
+      nlevels(droplevels(column_values)) > 1
+    } else {
+      length(unique(stats::na.omit(column_values))) > 1
+    }
+  }, logical(1))]
+}
+
+filter_measurement_groups <- function(measurement_groups, active_measurement_columns) {
+  Filter(function(measurement_group) {
+    length(measurement_group$columns) > 0
+  }, lapply(measurement_groups, function(measurement_group) {
+    measurement_group$columns <- intersect(measurement_group$columns, active_measurement_columns)
+    measurement_group
+  }))
+}
+
 match_measurement_groups <- function(column_names, measurement_group_configuration, plotting_configuration) {
   matched_groups <- lapply(measurement_group_configuration, function(measurement_group) {
     matched_columns <- unique(unlist(lapply(measurement_group$columnPrefixes, function(column_prefix) {
@@ -207,5 +231,5 @@ classify_edge_type <- function(node_from, node_to, active_exogenous_variables, m
     return(paste("Within", from_group))
   }
 
-  "Across measurement groups"
+  "Cross-compartment"
 }

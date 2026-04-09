@@ -30,7 +30,7 @@ default_configuration <- function() {
       )
     ),
     variables = list(
-      exogenousVariables = c("GroupName", "VaccinationStatus", "Timepoint", "Tissue"),
+      exogenousVariables = c("GroupName", "VaccinationStatus", "Timepoint"),
       stratifierVariables = c("Protection"),
       derivedVariables = list(
         VaccinationStatus = list(
@@ -50,18 +50,18 @@ default_configuration <- function() {
       ),
       measurementGroups = list(
         list(
-          groupName = "pbmcCells",
-          columnPrefixes = c("PBMC_"),
-          tier = 2,
-          fillColour = "lightblue",
-          borderColour = "steelblue"
-        ),
-        list(
           groupName = "liverCells",
           columnPrefixes = c("Liver_"),
-          tier = 3,
+          tier = 2,
           fillColour = "lightgreen",
           borderColour = "darkgreen"
+        ),
+        list(
+          groupName = "pbmcCells",
+          columnPrefixes = c("PBMC_"),
+          tier = 3,
+          fillColour = "lightblue",
+          borderColour = "steelblue"
         ),
         list(
           groupName = "boneMarrowCells",
@@ -137,7 +137,6 @@ required_configuration_paths <- function() {
     c("data", "analysisTimepointColumn"),
     c("data", "groupColumn"),
     c("data", "protectionColumn"),
-    c("data", "tissueColumn"),
     c("data", "cellTypeColumn"),
     c("data", "fractionColumn"),
     c("variables", "exogenousVariables"),

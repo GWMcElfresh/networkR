@@ -41,12 +41,10 @@ read_panel_file <- function(file_path, configuration) {
   )
 
   panel_table[[configuration$data$cellTypeColumn]] <- prefixed_cell_types
-  panel_table[[configuration$data$tissueColumn]] <- tissue_name
 
   identifier_columns <- c(
     configuration$data$idColumn,
     configuration$data$analysisTimepointColumn,
-    configuration$data$tissueColumn,
     configuration$data$protectionColumn,
     configuration$data$groupColumn,
     configuration$data$cellTypeColumn
@@ -65,7 +63,6 @@ read_panel_file <- function(file_path, configuration) {
       id_cols = dplyr::all_of(c(
         configuration$data$idColumn,
         configuration$data$analysisTimepointColumn,
-        configuration$data$tissueColumn,
         configuration$data$protectionColumn,
         configuration$data$groupColumn
       )),
@@ -97,7 +94,6 @@ ReadPanels <- function(configuration) {
   join_keys <- c(
     configuration$data$idColumn,
     configuration$data$analysisTimepointColumn,
-    configuration$data$tissueColumn,
     configuration$data$protectionColumn,
     configuration$data$groupColumn
   )

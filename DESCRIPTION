@@ -10,6 +10,8 @@ Description: Provides a configurable pipeline for Bayesian network structure
     stability estimation, structure comparison, and ggraph-based network
     visualization.
 License: MIT + file LICENSE
+URL: https://gwmcelfresh.github.io/networkR/
+BugReports: https://github.com/GWMcElfresh/networkR/issues
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2

@@ -1,7 +1,12 @@
+url: https://gwmcelfresh.github.io/networkR/
+
 template:
   bootstrap: 5
 
 reference:
+  - title: Package
+    contents:
+      - networkR-package
   - title: Configuration
     contents:
       - BuildConfiguration

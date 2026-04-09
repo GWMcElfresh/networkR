@@ -28,7 +28,6 @@ variables:
     - "GroupName"
     - "VaccinationStatus"
     - "Timepoint"
-    - "Tissue"
   stratifierVariables:
     - "Protection"
   derivedVariables:

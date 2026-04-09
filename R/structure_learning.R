@@ -47,7 +47,7 @@ fit_requested_networks <- function(model_data, blacklist, configuration) {
 LearnBayesianNetwork <- function(discretizationResult, configuration) {
   blacklist_result <- BuildBlacklist(discretizationResult, configuration)
   active_exogenous_variables <- blacklist_result$activeExogenousVariables
-  model_columns <- c(active_exogenous_variables, discretizationResult$measurementColumns)
+  model_columns <- c(active_exogenous_variables, blacklist_result$measurementColumns)
   model_data <- discretizationResult$discreteData[, model_columns, drop = FALSE]
 
   if (ncol(model_data) < 2) {
@@ -99,8 +99,8 @@ LearnBayesianNetwork <- function(discretizationResult, configuration) {
       averagedNetwork = averaged_network,
       blacklist = blacklist_result$blacklist,
       activeExogenousVariables = active_exogenous_variables,
-      measurementGroups = discretizationResult$measurementGroups,
-      measurementColumns = discretizationResult$measurementColumns,
+      measurementGroups = blacklist_result$measurementGroups,
+      measurementColumns = blacklist_result$measurementColumns,
       parameterFit = parameter_fit,
       threshold = configuration$structureLearning$averageNetworkThreshold
     ),

@@ -51,20 +51,29 @@ BuildBlacklist <- function(discretizationResult, configuration) {
     discrete_data,
     discretizationResult$exogenousVariables
   )
+  active_measurement_columns <- find_active_measurement_columns(
+    discrete_data,
+    discretizationResult$measurementColumns
+  )
+  active_measurement_groups <- filter_measurement_groups(
+    discretizationResult$measurementGroups,
+    active_measurement_columns
+  )
 
   blacklist <- dplyr::bind_rows(
     build_measurement_to_exogenous_blacklist(
-      discretizationResult$measurementColumns,
+      active_measurement_columns,
       active_exogenous_variables
     ),
     build_exogenous_to_exogenous_blacklist(active_exogenous_variables),
-    build_tier_blacklist(discretizationResult$measurementGroups)
+    build_tier_blacklist(active_measurement_groups)
   ) |>
     dplyr::distinct(.data$from, .data$to)
 
   list(
     blacklist = blacklist,
     activeExogenousVariables = active_exogenous_variables,
-    measurementGroups = discretizationResult$measurementGroups
+    measurementGroups = active_measurement_groups,
+    measurementColumns = active_measurement_columns
   )
 }

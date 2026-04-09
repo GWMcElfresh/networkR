@@ -28,7 +28,6 @@ variables:
     - "GroupName"
     - "VaccinationStatus"
     - "Timepoint"
-    - "Tissue"
   stratifierVariables:
     - "Protection"
   derivedVariables:
@@ -45,16 +44,16 @@ variables:
       equalsValue: "Control Animal"
       replacementValue: ~
   measurementGroups:
-    - groupName: "pbmcCells"
-      columnPrefixes: ["PBMC_"]
-      tier: 2
-      fillColour: "lightblue"
-      borderColour: "steelblue"
     - groupName: "liverCells"
       columnPrefixes: ["Liver_"]
-      tier: 3
+      tier: 2
       fillColour: "lightgreen"
       borderColour: "darkgreen"
+    - groupName: "pbmcCells"
+      columnPrefixes: ["PBMC_"]
+      tier: 3
+      fillColour: "lightblue"
+      borderColour: "steelblue"
     - groupName: "boneMarrowCells"
       columnPrefixes: ["BM_"]
       tier: 3
