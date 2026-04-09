@@ -1,0 +1,79 @@
+# networkR
+
+`networkR` is an R package scaffold for configurable Bayesian network
+analysis in factorial and repeated-measures studies. I intend to extend
+this to gaussian copulas/other graphical models, but for now, just
+Bayesian networks.
+
+## Current scope
+
+- YAML or programmatic configuration
+- Panel ingestion from `data_sheets/`
+- Derived design variables
+- MICE predictive mean matching imputation
+- Hartemink discretization with fallback handling
+- Tier-aware blacklist construction
+- Bootstrap Bayesian network fitting with `bnlearn`
+- `ggraph(layout = "fr")` network plotting with a `strength.plot()`
+  fallback path
+- CI scaffolding, test scaffolding, and pkgdown scaffolding
+
+## Quick start
+
+``` r
+library(networkR)
+
+configuration <- ParseConfiguration("inst/example_configuration.yml")
+analysisResult <- RunPipeline(configuration)
+
+analysisResult$plotObjects$fullModel
+```
+
+## Status
+
+This repository now contains the package foundation. The remaining work
+is to fill out more of the specialized analyses from the R Markdown
+document, including joint paired-tissue modeling, mediation workflows,
+and correlation reporting.
+
+# Package index
+
+## Package
+
+- [`networkR-package`](https://gwmcelfresh.github.io/networkR/reference/networkR-package.md)
+  [`networkR`](https://gwmcelfresh.github.io/networkR/reference/networkR-package.md)
+  : networkR: Flexible Bayesian Network Pipelines
+
+## Configuration
+
+- [`BuildConfiguration()`](https://gwmcelfresh.github.io/networkR/reference/ConfigurationFunctions.md)
+  [`ParseConfiguration()`](https://gwmcelfresh.github.io/networkR/reference/ConfigurationFunctions.md)
+  [`ValidateConfiguration()`](https://gwmcelfresh.github.io/networkR/reference/ConfigurationFunctions.md)
+  : Configuration helpers
+
+## Data Preparation
+
+- [`ReadPanels()`](https://gwmcelfresh.github.io/networkR/reference/DataFunctions.md)
+  [`AddDerivedVariables()`](https://gwmcelfresh.github.io/networkR/reference/DataFunctions.md)
+  [`ImputeMeasurements()`](https://gwmcelfresh.github.io/networkR/reference/DataFunctions.md)
+  [`DiscretizeMeasurements()`](https://gwmcelfresh.github.io/networkR/reference/DataFunctions.md)
+  : Data preparation helpers
+
+## Network Analysis
+
+- [`BuildBlacklist()`](https://gwmcelfresh.github.io/networkR/reference/AnalysisFunctions.md)
+  [`LearnBayesianNetwork()`](https://gwmcelfresh.github.io/networkR/reference/AnalysisFunctions.md)
+  [`CompareStructures()`](https://gwmcelfresh.github.io/networkR/reference/AnalysisFunctions.md)
+  : Bayesian network analysis helpers
+- [`PlotBayesianNetwork()`](https://gwmcelfresh.github.io/networkR/reference/PlotFunctions.md)
+  [`SavePlot()`](https://gwmcelfresh.github.io/networkR/reference/PlotFunctions.md)
+  : Plot Bayesian network results
+- [`RunPipeline()`](https://gwmcelfresh.github.io/networkR/reference/RunPipeline.md)
+  : Run the networkR analysis pipeline
+
+# Articles
+
+### All vignettes
+
+- [Getting Started with
+  networkR](https://gwmcelfresh.github.io/networkR/articles/networkR-introduction.md):
