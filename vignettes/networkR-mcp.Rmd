@@ -1,0 +1,539 @@
+---
+title: "Using MCP Tools with networkR"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Using MCP Tools with networkR}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+## Overview
+
+`networkR` ships with an MCP server entry point at `inst/mcp_server.R`.
+The server uses `mcptools` through `btw::btw_mcp_server()` and adds a small
+set of `networkR`-specific tools that help an LLM:
+
+- inspect raw `.csv` / `.xls` / `.xlsx` inputs;
+- retrieve the configuration template and example YAML files;
+- write and validate a candidate configuration;
+- run `RunPipeline()` from that configuration;
+- inspect the most recent pipeline result in the current MCP session.
+
+The intended workflow is:
+
+1. the user describes the analysis goal in natural language;
+2. the model calls `networkr_explore_data_directory` to inspect input files and understand column roles;
+3. the model calls `networkr_generate_configuration_from_data` to produce a first YAML draft and a copy-pasteable `reviewScaffold`;
+4. the user reviews the scaffold — moving columns between roles (e.g., dropping `CFU_Homogenate` from `unsure` into `ignored`, promoting a column to `stratifiedBy`);
+5. the model calls `networkr_refine_configuration_from_scaffold` with the edited `columnRoles:` block to regenerate YAML from the corrected assignments;
+6. the model calls `networkr_write_configuration_file` and then `networkr_validate_configuration_file`;
+7. the model runs the pipeline and answers follow-up questions from the stored result.
+
+This works best in GitHub Copilot in VS Code, but the same server can be used
+from any MCP-compatible client.
+
+## Recommended MCP workflow
+
+Use this sequence for reliable config generation and execution:
+
+1. call `networkr_get_configuration_schema` to retrieve template fields and required paths;
+2. call `networkr_explore_data_directory` to inspect columns and review role suggestions;
+3. call `networkr_generate_configuration_from_data` for an initial YAML draft and `reviewScaffold`;
+4. edit the `columnRoles:` scaffold, especially `unsure` and `ignored` buckets;
+5. call `networkr_refine_configuration_from_scaffold` to regenerate YAML from revised roles;
+6. call `networkr_write_configuration_file` and `networkr_validate_configuration_file`;
+7. call `networkr_run_pipeline_from_config`;
+8. call `networkr_describe_last_pipeline_result` for follow-up summaries.
+
+This sequence is designed to keep role decisions explicit and reproducible,
+especially via `data.ignoredColumns` and the scaffold review loop.
+
+## Install the MCP dependencies
+
+Install the MCP packages once in the R library used by your client:
+
+```r
+install.packages(c("btw", "ellmer", "mcptools"))
+```
+
+If you plan to use the optional `bnlearn` backend, install that as well.
+
+## Start the server in VS Code / GitHub Copilot
+
+This repository includes a workspace MCP configuration at `.vscode/mcp.json`.
+After opening the repository in VS Code:
+
+1. trust the workspace MCP server when prompted;
+2. open Chat and use **Configure Tools** to verify that the `networkR` server is active;
+3. start asking analysis questions in natural language.
+
+The workspace config runs:
+
+```json
+{
+  "servers": {
+    "networkR": {
+      "type": "stdio",
+      "command": "Rscript",
+      "args": ["${workspaceFolder}/inst/mcp_server.R"]
+    }
+  }
+}
+```
+
+Because the script lives inside the repository, it can bootstrap the package
+code directly from the checkout without requiring an installed `networkR`
+package.
+
+## Start the server in other MCP clients
+
+Use the same script path with any client that supports stdio MCP servers.
+
+### Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "networkR": {
+      "command": "Rscript",
+      "args": ["/absolute/path/to/networkR/inst/mcp_server.R"]
+    }
+  }
+}
+```
+
+### Claude Code
+
+```bash
+claude mcp add -s user networkR -- Rscript /absolute/path/to/networkR/inst/mcp_server.R
+```
+
+## Optional: connect to a live R session
+
+If you also want `btw` environment tools to inspect a live RStudio or Positron
+session, source the server script and register the current session:
+
+```r
+source("inst/mcp_server.R")
+networkR_mcp_session()
+```
+
+For a persistent setup, add the same two lines to a project `.Rprofile`.
+
+This step is optional. The `networkR` pipeline tools work without it because
+the MCP server stores the most recent pipeline result in its own process.
+
+## networkR-specific tools
+
+The custom tools are intentionally narrow and map to the package workflow.
+
+### `networkr_get_configuration_schema`
+
+Returns:
+
+- the configuration template YAML;
+- the example configuration YAML;
+- the list of required dotted configuration paths;
+- a recommended analysis workflow.
+
+Use this first when the model needs to draft a configuration.
+
+### `networkr_explore_data_directory`
+
+Summarizes all `.csv`, `.xls`, and `.xlsx` files in a target directory.
+For each file the response includes:
+
+- column names, classes, missingness, and example values;
+- a `suggestedInputFormat` (`"panel"` or `"wide_by_tissue"`);
+- grouped `roleAssignments` (`subjectId`, `sampleId`, `tissue`, `group`, `measurement`, `unsure`, …);
+- `unresolvedIssues` explaining why certain columns were flagged;
+- a copy-pasteable `reviewScaffold` — a `columnRoles:` YAML block you can edit
+  and pass directly to `networkr_refine_configuration_from_scaffold`.
+
+Use this to map input columns into configuration fields before generating YAML.
+
+### Role mapping: scaffold roles -> config fields
+
+The `columnRoles` scaffold maps directly to configuration fields:
+
+| Role bucket | Primary config target |
+|---|---|
+| `subjectId` | `data.idColumn` |
+| `sampleId` | `data.sampleIdColumns` (or `data.ignoredColumns` if excluded) |
+| `tissue` | `data.tissueColumn`, `data.tissueMap` |
+| `rawTimepoint` | `data.rawTimepointColumn` |
+| `analysisTimepoint` | `data.analysisTimepointColumn` |
+| `group` | `data.groupColumn` |
+| `outcomeOrProtection` | `data.protectionColumn` (and usually `variables.stratifierVariables`) |
+| `exogenousNotStratified` | `variables.exogenousVariables` |
+| `stratifiedBy` | `variables.stratifierVariables` |
+| `measurement` | `data.measurementColumns` (or inferred measurements) |
+| `ignored` | `data.ignoredColumns` |
+| `unsure` | `unresolvedIssues` / user review queue |
+
+Recommended rule: move only truly non-model metadata to `ignored`; keep true
+analysis endpoints in `stratifiedBy` or `outcomeOrProtection`.
+
+### `networkr_generate_configuration_from_data`
+
+Inspects a single CSV or spreadsheet, infers column roles, and produces:
+
+- a minimal `yamlText` configuration draft;
+- a `reviewScaffold` (`columnRoles:` YAML block) to review and edit;
+- `unresolvedIssues` listing columns that need manual placement;
+- `roleAssignments` and `resolvedRoles` for programmatic inspection.
+
+Use this when you have a single tabular file and want a starting configuration
+without having to draft YAML from the template by hand.
+
+### `networkr_refine_configuration_from_scaffold`
+
+Accepts an **edited** `columnRoles:` YAML block and regenerates the YAML
+configuration from the corrected role assignments.  The typical loop is:
+
+1. Get a `reviewScaffold` from `networkr_generate_configuration_from_data` or
+   `networkr_explore_data_directory`.
+2. Move columns between roles (e.g., move `CFU_Homogenate` from `unsure` to
+   `ignored`; move `Disease_Severity` to `stratifiedBy`).
+3. Pass the edited block as `scaffold_yaml` to
+   `networkr_refine_configuration_from_scaffold` along with the original
+   `data_file_path`.  The tool re-resolves the tissue map and configuration
+   fields from the revised assignments and returns a new `yamlText`.
+4. Save with `networkr_write_configuration_file`.
+
+The `scaffold_yaml` argument must contain a `columnRoles:` key at the top
+level matching the role names used in the scaffold.
+
+### `networkr_write_configuration_file`
+
+Writes full YAML text to disk and immediately validates the saved file.
+
+This is particularly useful for clients that do not already have strong
+workspace file-editing tools.
+
+### `networkr_validate_configuration_file`
+
+Parses and validates a configuration, normalizes relative paths against the
+configuration file directory, and returns either a short summary or an error.
+
+Validation also checks backend and format compatibility, including:
+
+- `data.inputFormat` consistency (`panel` vs `wide_by_tissue`);
+- whether required columns are present for the selected format;
+- backend algorithm compatibility (`stagedtrees` vs `bnlearn`);
+- measurement availability (explicit columns or infer mode for wide input).
+
+### `networkr_run_pipeline_from_config`
+
+Runs `RunPipeline()` from the validated configuration. If `output_dir` is
+provided, that directory is used for saved plots and `savePlots` is forced on.
+
+The tool stores the pipeline result in the MCP server session as
+`lastPipelineResult`.
+
+### `networkr_describe_last_pipeline_result`
+
+Returns a summary of the most recent stored result, including:
+
+- backend;
+- row count;
+- measurement column count;
+- averaged edge count;
+- stratified analyses;
+- saved plot files.
+
+Use this to answer follow-up questions after a run without re-executing the
+full pipeline.
+
+## End-to-end scaffold review example
+
+The following walkthrough shows how the scaffold-refinement loop works for a
+pre-pivoted TB lung dataset (`data/subjectIdTable_TB.csv`).
+
+**Step 1 — Generate a config draft**
+
+```text
+Generate a networkR configuration from data/subjectIdTable_TB.csv with study
+name "TB Lung Cell Abundance" and output directory "outputs/tb_lung".
+```
+
+The tool returns a `reviewScaffold` similar to:
+
+```yaml
+# Review these column-role assignments.
+# Move column names between sections before generating YAML.
+columnRoles:
+  subjectId:
+    - "SubjectId"          # Column name matches a subject identifier pattern.
+  sampleId:
+    - "cDNA_ID"            # Column name suggests a per-measurement sample identifier.
+  tissue:
+    - "Tissue"             # Column name matches the tissue axis for a wide-by-tissue table.
+  rawTimepoint:
+    - "Timepoint"
+  analysisTimepoint:
+    - "Timepoint"
+  group:
+    - "Vaccine"
+  outcomeOrProtection:
+    - "Probability_Protect"
+  exogenousNotStratified:
+    - "Challenge"
+  stratifiedBy:
+    []
+  measurement:
+    - "TotalMyeloids"
+    - "PercentageM1Myeloids"
+    # ... other numeric columns
+  ignored:
+    []
+  unsure:
+    - "CFU_Homogenate"     # Bacterial burden endpoint — move to ignored or outcomeOrProtection.
+    - "LungPathScore"      # Pathology score — move to stratifiedBy, measurement, or ignored.
+    - "Disease_Severity"   # Clinical severity score — move to stratifiedBy or ignored.
+```
+
+**Step 2 — Edit the scaffold**
+
+Decide where each `unsure` column belongs and move it:
+
+```yaml
+columnRoles:
+  # ... (other roles unchanged)
+  stratifiedBy:
+    - "Disease_Severity"
+  ignored:
+    - "CFU_Homogenate"
+    - "LungPathScore"
+  unsure:
+    []
+```
+
+**Step 3 — Regenerate from the corrected scaffold**
+
+```text
+Refine the config using this corrected scaffold:
+
+columnRoles:
+  subjectId:
+    - "SubjectId"
+  sampleId:
+    - "cDNA_ID"
+  tissue:
+    - "Tissue"
+  rawTimepoint:
+    - "Timepoint"
+  analysisTimepoint:
+    - "Timepoint"
+  group:
+    - "Vaccine"
+  outcomeOrProtection:
+    - "Probability_Protect"
+  exogenousNotStratified:
+    - "Challenge"
+  stratifiedBy:
+    - "Disease_Severity"
+  measurement:
+    - "TotalMyeloids"
+    - "PercentageM1Myeloids"
+  ignored:
+    - "CFU_Homogenate"
+    - "LungPathScore"
+  unsure:
+    []
+
+Data file: data/subjectIdTable_TB.csv
+Study name: "TB Lung Cell Abundance"
+Output directory: "outputs/tb_lung"
+```
+
+`networkr_refine_configuration_from_scaffold` regenerates YAML with
+`Disease_Severity` in `stratifierVariables`, the burden and pathology columns
+excluded, and `inferMeasurementColumns: true` for the remaining numeric columns.
+
+**Step 4 — Save and validate**
+
+```text
+Save the config to configs/tb_lung_refined.yml and validate.
+```
+
+If validation fails, fix the scaffold first, then regenerate. Common causes:
+
+- a required design column was moved to `ignored` by mistake;
+- `measurement` is empty while wide input uses `inferMeasurementColumns: false`;
+- outcome or protection columns were duplicated inconsistently between
+  `outcomeOrProtection` and `stratifiedBy` decisions.
+
+**Step 5 — Run**
+
+```text
+Run the pipeline from configs/tb_lung_refined.yml.
+```
+
+## Example Copilot workflow
+
+In Copilot Chat, a useful first prompt is:
+
+```text
+I want to compare protected versus non-protected vaccinated animals in my PBMC and liver panels. Inspect the data directory, draft a networkR YAML configuration, validate it, and tell me what still needs my input.
+```
+
+For a full run:
+
+```text
+Use the networkR MCP tools to inspect my data, write a configuration at configs/protection.yml, validate it, run the pipeline, and summarize the full-model and stratified outputs.
+```
+
+## Prompting best practices
+
+### Backend and discretization guidance
+
+Generated configs default to stagedtrees-oriented settings. Use this quick rule:
+
+- choose stagedtrees when you want the package defaults and factor-based discretization;
+- choose bnlearn when you explicitly need bnlearn scoring and hartemink-style discretization.
+
+When using overlap-prone fields, remember generated/normalized behavior:
+
+- `analysisTimepointColumn` defaults to `rawTimepointColumn` when omitted;
+- `protectionColumn` is typically included in `stratifierVariables`;
+- design fields (group/timepoint plus exogenous-not-stratified roles) are
+  consolidated into `variables.exogenousVariables`.
+
+The model can only draft a strong configuration if the prompt contains the
+pieces of information that `networkR` actually uses during ingestion and
+structure learning.
+
+For the current panel-file workflow, the most important inputs are:
+
+- the data directory to inspect;
+- whether the files are long-format panel tables, one file per tissue;
+- the filename fragments that identify each tissue, because tissue is inferred
+  from filenames rather than read from a dedicated column;
+- the exact column names for subject ID, timepoint, experimental group,
+  outcome/protection, cell type, and abundance/fraction;
+- whether any metadata fields are missing and need to be added as constant or
+  derived columns before running the pipeline;
+- which analyses should become `stratifications` and which variables should be
+  treated as ordinary exogenous covariates;
+- whether different tissue compartments should be allowed to connect in either
+  direction or forced into a directional hierarchy.
+
+For multi-tissue abundance analyses, one subtle but important point is the
+measurement-group `tier`. In the current blacklist logic, higher-tier groups
+cannot point to lower-tier groups. If you want two tissues to be able to relate
+in either direction, put them on the same tier. If you want one tissue to be
+strictly upstream or downstream, give them different tiers.
+
+Another important detail is filename matching order. `parse_tissue_name()` uses
+the first matching fragment in `data.tissueMap`, so more specific keys should be
+listed before generic ones. For example, `lung_draining_lymph_node` should
+appear before `lung`.
+
+## What a prompt is still missing
+
+If a user only says something like:
+
+```text
+I have lung tissue, lung draining lymph node tissue, and cell type abundances. Subject ID is SubjectId.
+```
+
+the model is still missing several fields needed for a runnable config:
+
+- the path to the input directory;
+- whether the files are `.csv` or `.xlsx` and whether there is one file per tissue;
+- the exact filename fragments that should map to `Lung` and `LDLN`;
+- the timepoint column name;
+- the experimental group column name;
+- the outcome/protection column name, if any;
+- whether `CellType` and `Fraction` are the actual column names;
+- whether reciprocal lung <-> draining-LN edges should be allowed, which in the
+  current config means placing both tissues on the same tier;
+- whether there are additional tissues that should be grouped separately;
+- whether any stratified comparisons should be run.
+
+The current ingest path also expects `groupColumn`, `protectionColumn`, and
+`rawTimepointColumn` to exist in the source files. If those columns do not
+exist, say that explicitly in the prompt so the model can either ask for a
+dummy-column workaround or note that package changes are needed.
+
+## Example prompt for lung and draining LN data
+
+```text
+Inspect ../data. My inputs are long-format panel files, one file per tissue, in csv format. Subject ID is SubjectId. The timepoint column is Day. The experimental group column is Treatment. The outcome column is Response. Cell type names are in CellType and abundances are in Fraction. Filenames containing "lung_draining_lymph_node" or "ldln" should map to LDLN, and filenames containing "lung" should map to Lung. Keep Lung and LDLN in the same tier so edges can orient either way. Draft configs/lung_ldln_bidirectional.yml, validate it, and tell me what is still ambiguous before running.
+```
+
+## Guidance for good results
+
+- Ask the model to inspect the data directory before drafting YAML.
+- Keep the YAML in the repository so relative data paths remain stable.
+- Validate before every run.
+- Use a smaller `bootstrapReplicates` value while iterating on the setup, then
+  increase it for the final analysis.
+- When working in Copilot, prefer the MCP tools for R-specific configuration and
+  execution, but keep using Copilot's built-in workspace tools for ordinary file
+  edits, searches, and shell commands.
+
+## The `wide_by_tissue` input format
+
+The default `inputFormat` is `"panel"`, which expects long-format panel files
+(one row per subject–tissue–cell type) with separate `CellType` and `Fraction`
+columns that are pivoted to wide format during ingestion.
+
+If your data is already in a **semi-wide format** — one row per
+(SubjectId, Tissue, Timepoint) with measurements already in named columns —
+use `inputFormat: "wide_by_tissue"` instead. The ingest step will:
+
+1. Read the single file matching `filePattern`.
+2. Split rows by `tissueColumn` values.
+3. Prefix every `measurementColumns` name with the cleaned tissue label
+   (e.g., `Lung-L → LungL_PercentageAlvMacrophage`).
+4. Pivot wide and join on the identity columns, producing the same
+   `<Tissue>_<Prefix><CellType>` format the rest of the pipeline expects.
+
+**Required extra fields for `wide_by_tissue`:**
+
+```yaml
+data:
+  inputFormat: "wide_by_tissue"
+  tissueColumn: "Tissue"          # column holding tissue labels per row
+  tissueMap:
+    "Lung-L": "LungL"             # raw tissue value → clean prefix (no hyphens)
+    "Lung-R": "LungR"
+  measurementColumns:             # explicit list of columns to treat as measurements
+    - "PercentageAlvMacrophage"
+    - "Total_Bcells"
+    # ... etc.
+```
+
+`cellTypeColumn` and `fractionColumn` are **not** required for this format.
+
+Fields that are never measurements (sample IDs, bacterial burden, outcome scores)
+must be omitted from `measurementColumns`. They can instead be placed in
+`variables.exogenousVariables` or used as `protectionColumn` / `stratifierVariables`.
+
+**Format detection:** when you call `networkr_explore_data_directory`, each file
+summary now includes a `suggestedInputFormat` field (`"panel"` or
+`"wide_by_tissue"`) inferred from the column layout. Use this as a starting
+point, but always verify manually.
+
+### Example prompt for pre-pivoted TB lung data
+
+```text
+Inspect data/subjectIdTable_TB.csv. The file has one row per subject-tissue pair
+with measurements already in named columns (no CellType/Fraction pivot needed).
+Subject ID is SubjectId. The tissue column is Tissue; map "Lung-L" to LungL and
+"Lung-R" to LungR. Timepoint and Group column is Vaccine. Protection column is
+Probability_Protect. Measurement columns are everything except SubjectId,
+cDNA_ID, Challenge, Timepoint, LungPathScore, Vaccine, CFU_Homogenate,
+Probability_Protect, Disease_Severity, Tissue. Both lung lobes should be in the
+same tier (bidirectional edges allowed). Draft configs/tb_lung.yml and validate.
+```

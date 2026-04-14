@@ -6,3 +6,10 @@
 ^README\.Rmd$
 ^pkgdown$
 ^docs$
+^doc$
+^Meta$
+^\.vscode$
+^data$
+^notes$
+^configs$
+^stagedtrees$

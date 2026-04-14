@@ -31,6 +31,7 @@ temporary directory.  By the end you will have:
 - configured a pipeline for two tissue compartments and two stratifications;
 - traced data through imputation, discretization, and blacklist construction;
 - learned and plotted Bayesian network structure on the full cohort;
+- fit a reduced stagedtrees model to inspect event-tree stages, splits, and stage densities;
 - compared network structure between exposure groups (Malaria Preexposed vs. Naive) 
   and between protection outcomes (Protected vs. Not protected).
 
@@ -261,16 +262,54 @@ The configuration controls every stage of the pipeline:
 | Section | Key parameters |
 |---------|---------------|
 | `study` | `studyName`, `randomSeed` |
-| `data` | `dataPath`, `filePattern`, column name mappings, tissue map |
+| `data` | `dataPath`, `filePattern`, `inputFormat`, column name mappings, tissue map, `ignoredColumns` |
 | `variables` | `exogenousVariables`, `stratifierVariables`, `derivedVariables`, `measurementGroups` |
 | `imputation` | `method` (pmm), `numberOfImputations`, `maximumIterations` |
-| `discretization` | `method` (hartemink), `initialBreaks`, `finalBreaks`, `fallbackBreaks` |
-| `structureLearning` | `algorithms`, `bootstrapReplicates`, `averageNetworkThreshold` |
+| `discretization` | `method` (`factors` default; `hartemink`/`quantile` with bnlearn), `initialBreaks`, `finalBreaks`, `fallbackBreaks` |
+| `structureLearning` | `backend`, backend-specific algorithm options, `bootstrapReplicates`, `averageNetworkThreshold` |
 | `stratifications` | List of cohort stratification definitions |
 | `plotting` | Layout, colours, sizes |
 | `output` | Save paths and file format |
 
-### 3.2 Building the vignette configuration
+### 3.2 Backend and discretization choices
+
+`networkR` now supports two structure-learning backends:
+
+- `stagedtrees` (default): works with `discretization.method = "factors"` by default.
+- `bnlearn` (optional): supports `discretization.method = "hartemink"` and
+  `discretization.method = "quantile"`.
+
+When `bnlearn` is installed, the `stagedtrees` backend reuses the bnlearn
+graph/bootstrap estimation path so averaged-network strengths stay comparable
+across backends, while still fitting a staged-event-tree model for the
+stagedtrees-native plotting functions below.
+
+When `backend = "stagedtrees"`, setting `discretization.method = "hartemink"`
+is automatically downgraded to `"factors"` to keep the pipeline executable.
+
+```{r backend-discretization-check, eval=FALSE}
+cat("Selected backend:", configuration$structureLearning$backend, "\n")
+cat("Selected discretization method:", configuration$discretization$method, "\n")
+if (identical(configuration$structureLearning$backend, "stagedtrees")) {
+  cat("Stagedtrees algorithm:", configuration$structureLearning$stagedtreesAlgorithm, "\n")
+} else {
+  cat("bnlearn algorithms:", paste(configuration$structureLearning$algorithms, collapse = ", "), "\n")
+}
+```
+
+### 3.3 Overlap-prone fields and normalization
+
+Some config fields intentionally overlap for readability and compatibility:
+
+- `data.rawTimepointColumn` and `data.analysisTimepointColumn`
+- `data.protectionColumn` and `variables.stratifierVariables`
+- `data.groupColumn`/timepoint fields and `variables.exogenousVariables`
+
+`BuildConfiguration()` normalizes these so users do not need to manually keep all
+duplicates synchronized in every draft. Generated configs also include
+`data.ignoredColumns`, which captures known non-model columns explicitly.
+
+### 3.4 Building the vignette configuration
 
 We override only the parameters that differ from the package defaults.  Key demo
 choices: **50 bootstrap replicates** and **`averageNetworkThreshold = 0.2`** to ensure
@@ -339,6 +378,9 @@ print(configuration)
 ```
 
 A YAML file equivalent to the above is available at `system.file("configuration_template.yml", package = "networkR")`.
+If you prefer schema-driven authoring instead of hand-editing YAML, use the MCP
+workflow in the companion vignette to generate, refine, and validate a config
+from tabular data.
 
 ---
 
@@ -363,6 +405,10 @@ The remainder of this vignette unpacks each component of `pipeline_result` in de
 ## 5. Panel ingestion
 
 ### 5.1 How `ReadPanels()` works
+
+This section describes the `inputFormat = "panel"` path. If your data is already
+wide by tissue, use `inputFormat = "wide_by_tissue"` and either provide
+`data.measurementColumns` explicitly or set `data.inferMeasurementColumns = TRUE`.
 
 `ReadPanels()` discovers all files in `configuration$data$dataPath` whose names
 match `configuration$data$filePattern`.  For each file it:
@@ -485,7 +531,22 @@ slot holds the same values plus the subject-level metadata columns.
 
 ## 7. Discretization
 
-### 7.1 Hartemink's algorithm
+### 7.1 Discretization methods
+
+The default discretization path is `method = "factors"`, which performs
+quantile-based binning with base R and works with the default stagedtrees
+backend.
+
+`networkR` also supports bnlearn-based discretization methods:
+
+- `method = "hartemink"`: joint discretization using pairwise mutual information.
+- `method = "quantile"`: bnlearn quantile discretization.
+
+These bnlearn methods require the bnlearn backend (or at least bnlearn to be
+installed for the discretization stage). When infeasible columns are detected,
+`fallbackBreaks` controls the per-column fallback discretization.
+
+### 7.2 Hartemink's algorithm
 
 Bayesian network score functions for categorical variables require discrete (factor)
 inputs.  `networkR` uses **Hartemink's pairwise mutual-information algorithm**
@@ -504,7 +565,7 @@ this requirement (too few distinct values or too few rows) are routed to a
 discretization_result <- DiscretizeMeasurements(imputation_result, configuration)
 ```
 
-### 7.2 Column routing
+### 7.3 Column routing
 
 ```{r show-discretization}
 dr <- pipeline_result$discretizationResult
@@ -521,7 +582,7 @@ if (length(dr$fallbackColumns) > 0) {
 }
 ```
 
-### 7.3 Discrete factor levels
+### 7.4 Discrete factor levels
 
 After discretization every measurement column is an ordered factor with
 `finalBreaks = 3` levels by default.  The Hartemink algorithm determines
@@ -601,7 +662,16 @@ knitr::kable(
 
 ## 9. Structure learning
 
-### 9.1 Tabu search
+### 9.1 Backend-aware structure learning
+
+`LearnBayesianNetwork()` dispatches by backend.
+
+- `stagedtrees` backend: returns an averaged adjacency matrix plus a staged-event-tree model object (`sevtModel`) used by `PlotEventTree()` and `PlotStageSplitHeatmap()`.
+- `bnlearn` backend: returns bnlearn-native network objects.
+
+The vignette chunks below use backend-aware extraction for averaged arcs.
+
+### 9.2 Tabu search
 
 `networkR` supports Hill-Climbing (`"hillClimbing"`) and **Tabu search** (`"tabu"`)
 for score-based BN structure learning.  Tabu search augments greedy hill-climbing
@@ -618,7 +688,7 @@ Tabu search on each, then aggregates arc frequencies into a `boot.strength` tabl
 structure_result <- LearnBayesianNetwork(discretization_result, configuration)
 ```
 
-### 9.2 BIC score
+### 9.3 BIC score
 
 ```{r show-bic}
 sr <- pipeline_result$fullModelResult
@@ -626,7 +696,7 @@ cat("BIC scores by algorithm:\n")
 print(round(sr$networkScores, 2))
 ```
 
-### 9.3 Bootstrap arc strength
+### 9.4 Bootstrap arc strength
 
 Each row in the `bootstrapStrength` table is a directed arc (`from → to`) and its
 estimated stability (`strength`) and direction probability (`direction`).  We sort
@@ -643,7 +713,7 @@ knitr::kable(
 )
 ```
 
-### 9.4 The averaged network
+### 9.5 The averaged network
 
 The averaged network retains only arcs whose stability exceeds
 `averageNetworkThreshold` (here 0.20).  This is the network visualized and compared
@@ -651,7 +721,17 @@ downstream.
 
 ```{r show-averaged-network}
 cat("Averaged network threshold:", sr$threshold, "\n\n")
-avg_arcs <- bnlearn::arcs(sr$averagedNetwork)
+# averagedNetwork is a matrix (stagedtrees backend) or a bnlearn bn (bnlearn backend)
+if (is.matrix(sr$averagedNetwork)) {
+  arc_indices <- which(sr$averagedNetwork > 0, arr.ind = TRUE)
+  avg_arcs <- data.frame(
+    from = rownames(sr$averagedNetwork)[arc_indices[, 1]],
+    to   = colnames(sr$averagedNetwork)[arc_indices[, 2]],
+    stringsAsFactors = FALSE
+  )
+} else {
+  avg_arcs <- bnlearn::arcs(sr$averagedNetwork)
+}
 cat("Arcs in the averaged network (", nrow(avg_arcs), "):\n", sep = "")
 if (nrow(avg_arcs) > 0) {
   knitr::kable(avg_arcs, row.names = FALSE)
@@ -663,6 +743,8 @@ if (nrow(avg_arcs) > 0) {
 ---
 
 ## 10. Network visualization
+
+### 10.1 Averaged DAG view
 
 `PlotBayesianNetwork()` renders the averaged network using `ggraph` with a
 Fruchterman-Reingold (`"fr"`) force-directed layout.  Node colours encode
@@ -684,6 +766,109 @@ pipeline_result$plotObjects$fullModel
 Wider edges and more opaque edges indicate higher bootstrap stability.  The node
 layout is stochastic (force-directed); run with `set.seed()` before
 `PlotBayesianNetwork()` for a reproducible layout.
+
+### 10.2 Stagedtrees-native plots
+
+When `backend = "stagedtrees"`, `networkR` also keeps a staged-event-tree fit in
+`fullModelResult$sevtModel`.  That unlocks two complementary plotting functions:
+
+- `PlotEventTree()` draws the chain event graph. Node fill shows stage identity by
+  default, node borders retain the measurement-group colours used in the DAG plot,
+  and node / edge size can encode stage frequency when
+  `plotting$eventTreeShowFrequency = TRUE`.
+- `PlotStageSplitHeatmap()` summarizes the same fit as a stage-by-split heatmap.
+  Tile fill is $P(\text{split} \mid \text{stage})$, while point size reflects the
+  stage sample size.
+
+The full demo model contains too many variables to enumerate every path under the
+default `plotting$cegPathLimit`, so the pipeline intentionally leaves
+`fullModelEventTree` as `NULL` here. For documentation we therefore fit a reduced
+stagedtrees model using two liver markers and one PBMC marker, which keeps the
+event tree interpretable and cheap to draw.
+
+```{r reduced-stagedtrees-model}
+reduced_measurement_columns <- c(
+  "Liver_Pct_Kupffer_Cells",
+  "Liver_Pct_CD8_T_Cells",
+  "PBMC_Pct_CD8_T_Cells"
+)
+
+reduced_exogenous_variables <- intersect(
+  pipeline_result$discretizationResult$exogenousVariables,
+  c(configuration$data$groupColumn, "VaccinationStatus")
+)
+
+reduced_measurement_groups <- Filter(
+  function(measurement_group) length(measurement_group$columns) > 0,
+  lapply(pipeline_result$discretizationResult$measurementGroups, function(measurement_group) {
+    measurement_group$columns <- intersect(measurement_group$columns, reduced_measurement_columns)
+    measurement_group
+  })
+)
+
+reduced_model_columns <- c(reduced_exogenous_variables, reduced_measurement_columns)
+
+reduced_discretization_result <- list(
+  subjectTable = pipeline_result$discretizationResult$subjectTable,
+  imputedData = pipeline_result$discretizationResult$imputedData,
+  continuousAnalysisData = pipeline_result$discretizationResult$continuousAnalysisData[
+    , reduced_model_columns,
+    drop = FALSE
+  ],
+  discreteData = pipeline_result$discretizationResult$discreteData[
+    , reduced_model_columns,
+    drop = FALSE
+  ],
+  measurementColumns = reduced_measurement_columns,
+  exogenousVariables = reduced_exogenous_variables,
+  stratifierVariables = pipeline_result$discretizationResult$stratifierVariables,
+  measurementGroups = reduced_measurement_groups,
+  fallbackColumns = intersect(
+    pipeline_result$discretizationResult$fallbackColumns,
+    reduced_measurement_columns
+  ),
+  harteminkColumns = intersect(
+    pipeline_result$discretizationResult$harteminkColumns,
+    reduced_measurement_columns
+  )
+)
+
+reduced_structure_result <- LearnBayesianNetwork(reduced_discretization_result, configuration)
+```
+
+```{r plot-reduced-event-tree, fig.width=10, fig.height=7.5}
+PlotEventTree(
+  reduced_structure_result,
+  configuration,
+  title = paste(configuration$study$studyName, "reduced event tree", sep = " - ")
+)
+```
+
+The event-tree view exposes the stagedtrees representation directly: stages that
+share the same conditional distribution are colour-matched, while thicker outgoing
+edges indicate more frequently traversed branches. If you want the fill colours to
+match the DAG palette instead, call `PlotEventTree(..., colorBy = "group")`.
+
+```{r plot-reduced-stage-split-heatmap, fig.width=9, fig.height=7}
+PlotStageSplitHeatmap(
+  reduced_structure_result,
+  configuration,
+  title = paste(configuration$study$studyName, "reduced stage splits", sep = " - ")
+)
+```
+
+The heatmap is often easier to read than the raw event tree when you want to ask
+which variables drive each split.  Stage labels include the estimated sample size,
+and the larger outlined points highlight the stages that dominate the fitted tree.
+
+```{r stagedtrees-plot-accessors, eval=FALSE}
+# Objects returned by RunPipeline() when a stagedtrees plot is small enough to draw
+pipeline_result$plotObjects$fullModelEventTree
+pipeline_result$plotObjects$fullModelStageSplitHeatmap
+
+pipeline_result$plotObjects$stratifiedModels$exposure$levelEventTreePlots[["Malaria Preexposed"]]
+pipeline_result$plotObjects$stratifiedModels$exposure$levelStageSplitHeatmaps[["Malaria Preexposed"]]
+```
 
 ---
 

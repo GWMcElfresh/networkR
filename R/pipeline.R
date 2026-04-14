@@ -10,6 +10,8 @@ run_stratified_models <- function(discretization_result, configuration) {
 
     level_results <- list()
     level_plots <- list()
+    level_event_tree_plots <- list()
+    level_stage_split_heatmaps <- list()
     for (level_name in level_names) {
       level_rows <- eligible_rows[discretization_result$imputedData[[variable_name]][eligible_rows] == level_name]
       if (length(level_rows) == 0) {
@@ -24,6 +26,30 @@ run_stratified_models <- function(discretization_result, configuration) {
         configuration,
         title = paste(configuration$study$studyName, analysis_name, level_name, sep = " - ")
       )
+      if (!is.null(level_structure_result$sevtModel)) {
+        level_event_tree_plots[[level_name]] <- tryCatch(
+          PlotEventTree(
+            level_structure_result,
+            configuration,
+            title = paste(configuration$study$studyName, analysis_name, level_name, "event tree", sep = " - ")
+          ),
+          error = function(e) {
+            message("PlotEventTree() failed for '", level_name, "': ", conditionMessage(e))
+            NULL
+          }
+        )
+        level_stage_split_heatmaps[[level_name]] <- tryCatch(
+          PlotStageSplitHeatmap(
+            level_structure_result,
+            configuration,
+            title = paste(configuration$study$studyName, analysis_name, level_name, "stage splits", sep = " - ")
+          ),
+          error = function(e) {
+            message("PlotStageSplitHeatmap() failed for '", level_name, "': ", conditionMessage(e))
+            NULL
+          }
+        )
+      }
     }
 
     comparison_results <- list()
@@ -48,10 +74,12 @@ run_stratified_models <- function(discretization_result, configuration) {
     }
 
     stratified_results[[analysis_name]] <- list(
-      levelResults = level_results,
-      levelPlots = level_plots,
-      comparisons = comparison_results,
-      comparisonPlots = comparison_plots
+      levelResults         = level_results,
+      levelPlots           = level_plots,
+      levelEventTreePlots  = level_event_tree_plots,
+      levelStageSplitHeatmaps = level_stage_split_heatmaps,
+      comparisons          = comparison_results,
+      comparisonPlots      = comparison_plots
     )
   }
 
@@ -66,6 +94,14 @@ save_pipeline_plots <- function(plot_objects, configuration) {
     SavePlot(plot_objects$fullModel, file.path(output_directory, "full_model_network.png"), configuration)
   }
 
+  if (inherits(plot_objects$fullModelEventTree, "ggplot")) {
+    SavePlot(plot_objects$fullModelEventTree, file.path(output_directory, "full_model_event_tree.png"), configuration)
+  }
+
+  if (inherits(plot_objects$fullModelStageSplitHeatmap, "ggplot")) {
+    SavePlot(plot_objects$fullModelStageSplitHeatmap, file.path(output_directory, "full_model_stage_split_heatmap.png"), configuration)
+  }
+
   for (analysis_name in names(plot_objects$stratifiedModels)) {
     analysis_plots <- plot_objects$stratifiedModels[[analysis_name]]
     for (level_name in names(analysis_plots$levelPlots)) {
@@ -74,6 +110,26 @@ save_pipeline_plots <- function(plot_objects, configuration) {
         SavePlot(
           level_plot,
           file.path(output_directory, paste0(make_file_name_fragment(analysis_name), "_", make_file_name_fragment(level_name), "_network.png")),
+          configuration
+        )
+      }
+    }
+    for (level_name in names(analysis_plots$levelEventTreePlots)) {
+      tree_plot <- analysis_plots$levelEventTreePlots[[level_name]]
+      if (inherits(tree_plot, "ggplot")) {
+        SavePlot(
+          tree_plot,
+          file.path(output_directory, paste0(make_file_name_fragment(analysis_name), "_", make_file_name_fragment(level_name), "_event_tree.png")),
+          configuration
+        )
+      }
+    }
+    for (level_name in names(analysis_plots$levelStageSplitHeatmaps)) {
+      heatmap_plot <- analysis_plots$levelStageSplitHeatmaps[[level_name]]
+      if (inherits(heatmap_plot, "ggplot")) {
+        SavePlot(
+          heatmap_plot,
+          file.path(output_directory, paste0(make_file_name_fragment(analysis_name), "_", make_file_name_fragment(level_name), "_stage_split_heatmap.png")),
           configuration
         )
       }
@@ -109,9 +165,35 @@ RunPipeline <- function(configuration) {
   discretization_result <- DiscretizeMeasurements(imputation_result, configuration)
   full_model_result <- LearnBayesianNetwork(discretization_result, configuration)
 
+  full_model_network_plot <- PlotBayesianNetwork(full_model_result, configuration, paste0(configuration$study$studyName, " - Full model"))
+  full_model_event_tree_plot <- if (!is.null(full_model_result$sevtModel)) {
+    tryCatch(
+      PlotEventTree(full_model_result, configuration, paste0(configuration$study$studyName, " - Full model event tree")),
+      error = function(e) {
+        message("PlotEventTree() failed for full model: ", conditionMessage(e))
+        NULL
+      }
+    )
+  } else {
+    NULL
+  }
+  full_model_stage_split_heatmap <- if (!is.null(full_model_result$sevtModel)) {
+    tryCatch(
+      PlotStageSplitHeatmap(full_model_result, configuration, paste0(configuration$study$studyName, " - Full model stage splits")),
+      error = function(e) {
+        message("PlotStageSplitHeatmap() failed for full model: ", conditionMessage(e))
+        NULL
+      }
+    )
+  } else {
+    NULL
+  }
+
   plot_objects <- list(
-    fullModel = PlotBayesianNetwork(full_model_result, configuration, paste0(configuration$study$studyName, " - Full model")),
-    stratifiedModels = run_stratified_models(discretization_result, configuration)
+    fullModel          = full_model_network_plot,
+    fullModelEventTree = full_model_event_tree_plot,
+    fullModelStageSplitHeatmap = full_model_stage_split_heatmap,
+    stratifiedModels   = run_stratified_models(discretization_result, configuration)
   )
 
   pipeline_result <- structure(
@@ -134,11 +216,15 @@ RunPipeline <- function(configuration) {
 }
 
 print.networkRPipelineResult <- function(x, ...) {
+  backend <- x$configuration$structureLearning$backend %||% "stagedtrees"
+  cores   <- x$configuration$structureLearning$bootstrapCores %||% 1
   cat("networkR pipeline result\n")
-  cat("  Study name: ", x$configuration$study$studyName, "\n", sep = "")
-  cat("  Rows: ", nrow(x$subjectTable), "\n", sep = "")
-  cat("  Measurement columns: ", length(x$imputationResult$measurementColumns), "\n", sep = "")
-  cat("  Stratified analyses: ", length(x$plotObjects$stratifiedModels), "\n", sep = "")
+  cat("  Study name:        ", x$configuration$study$studyName, "\n", sep = "")
+  cat("  Backend:           ", backend, "\n", sep = "")
+  cat("  Bootstrap cores:   ", cores, "\n", sep = "")
+  cat("  Rows:              ", nrow(x$subjectTable), "\n", sep = "")
+  cat("  Measurement cols:  ", length(x$imputationResult$measurementColumns), "\n", sep = "")
+  cat("  Stratified models: ", length(x$plotObjects$stratifiedModels), "\n", sep = "")
   invisible(x)
 }
 

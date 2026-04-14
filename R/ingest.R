@@ -1,3 +1,92 @@
+read_wide_by_tissue_file <- function(file_path, configuration) {
+  file_extension <- tolower(tools::file_ext(file_path))
+
+  if (identical(file_extension, "csv")) {
+    wide_table <- utils::read.csv(file_path, check.names = FALSE, stringsAsFactors = FALSE)
+  } else {
+    wide_table <- as.data.frame(readxl::read_excel(file_path), check.names = FALSE)
+  }
+
+  valid_name_mask <- nchar(trimws(colnames(wide_table))) > 0 &
+    !grepl("^\\.\\.\\.\\d+$", colnames(wide_table))
+  wide_table <- wide_table[, valid_name_mask, drop = FALSE]
+
+  tissue_column    <- configuration$data$tissueColumn
+  id_column        <- configuration$data$idColumn
+  timepoint_column <- configuration$data$analysisTimepointColumn
+  group_column     <- configuration$data$groupColumn
+  protection_column <- configuration$data$protectionColumn
+  measurement_columns <- infer_wide_measurement_columns(wide_table, configuration)
+
+  if (length(measurement_columns) == 0) {
+    stop(
+      "No measurement columns were detected for ", basename(file_path),
+      ". Provide data.measurementColumns explicitly or revise the inferred roles.",
+      call. = FALSE
+    )
+  }
+
+  required_columns <- c(id_column, tissue_column, configuration$data$rawTimepointColumn, group_column)
+  if (!is.null(protection_column) && nzchar(protection_column %||% "")) {
+    required_columns <- c(required_columns, protection_column)
+  }
+  assert_has_columns(wide_table, required_columns, object_name = basename(file_path))
+
+  missing_measurements <- setdiff(measurement_columns, colnames(wide_table))
+  if (length(missing_measurements) > 0) {
+    stop(
+      "The following measurementColumns are missing from ", basename(file_path), ": ",
+      paste(missing_measurements, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  if (configuration$data$rawTimepointColumn != timepoint_column) {
+    colnames(wide_table)[colnames(wide_table) == configuration$data$rawTimepointColumn] <- timepoint_column
+  }
+
+  wide_table[[id_column]] <- as.character(wide_table[[id_column]])
+
+  tissue_map <- configuration$data$tissueMap %||% list()
+
+  join_columns <- c(id_column, timepoint_column, group_column)
+  if (!is.null(protection_column) && nzchar(protection_column %||% "")) {
+    join_columns <- c(join_columns, protection_column)
+  }
+
+  all_tissues <- unique(wide_table[[tissue_column]])
+  tissue_tables <- lapply(all_tissues, function(tissue_value) {
+    tissue_rows <- wide_table[wide_table[[tissue_column]] == tissue_value, , drop = FALSE]
+
+    tissue_label <- parse_tissue_name_from_value(tissue_value, tissue_map)
+
+    prefixed_measurement_names <- paste0(tissue_label, "_", measurement_columns)
+    tissue_measurements <- tissue_rows[, measurement_columns, drop = FALSE]
+    colnames(tissue_measurements) <- prefixed_measurement_names
+
+    cbind(tissue_rows[, join_columns, drop = FALSE], tissue_measurements)
+  })
+
+  Reduce(function(left_table, right_table) {
+    dplyr::full_join(left_table, right_table, by = join_columns)
+  }, tissue_tables)
+}
+
+parse_tissue_name_from_value <- function(tissue_value, tissue_map) {
+  if (length(tissue_map) == 0) {
+    return(gsub("[^A-Za-z0-9]", "", tissue_value))
+  }
+
+  tissue_value_lower <- tolower(tissue_value)
+  for (pattern in names(tissue_map)) {
+    if (grepl(tolower(pattern), tissue_value_lower, fixed = TRUE)) {
+      return(tissue_map[[pattern]])
+    }
+  }
+
+  gsub("[^A-Za-z0-9]", "", tissue_value)
+}
+
 read_panel_file <- function(file_path, configuration) {
   file_extension <- tolower(tools::file_ext(file_path))
 
@@ -78,6 +167,31 @@ read_panel_file <- function(file_path, configuration) {
 #' @return A joined subject-level table.
 ReadPanels <- function(configuration) {
   ValidateConfiguration(configuration)
+
+  input_format <- configuration$data$inputFormat %||% "panel"
+
+  if (identical(input_format, "wide_by_tissue")) {
+    panel_files <- list.files(
+      configuration$data$dataPath,
+      pattern = configuration$data$filePattern,
+      full.names = TRUE,
+      recursive = FALSE
+    )
+
+    if (length(panel_files) == 0) {
+      stop("No data files found in dataPath: ", configuration$data$dataPath, call. = FALSE)
+    }
+
+    if (length(panel_files) > 1) {
+      stop(
+        "wide_by_tissue inputFormat expects a single data file but found ",
+        length(panel_files), " in: ", configuration$data$dataPath,
+        call. = FALSE
+      )
+    }
+
+    return(read_wide_by_tissue_file(panel_files[[1]], configuration))
+  }
 
   panel_files <- list.files(
     configuration$data$dataPath,

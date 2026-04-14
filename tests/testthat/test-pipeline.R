@@ -44,5 +44,7 @@ test_that("RunPipeline produces a pipeline result from CSV panels", {
   pipeline_result <- RunPipeline(configuration)
 
   expect_s3_class(pipeline_result, "networkRPipelineResult")
-  expect_true("fullModel" %in% names(pipeline_result$plotObjects))
+  expect_true(all(c("fullModel", "fullModelEventTree", "fullModelStageSplitHeatmap") %in% names(pipeline_result$plotObjects)))
+  expect_s3_class(pipeline_result$plotObjects$fullModelEventTree, "ggplot")
+  expect_s3_class(pipeline_result$plotObjects$fullModelStageSplitHeatmap, "ggplot")
 })

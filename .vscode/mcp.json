@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "networkR": {
+      "type": "stdio",
+      "command": "Rscript",
+      "args": [
+        "${workspaceFolder}/inst/mcp_server.R"
+      ]
+    }
+  }
+}

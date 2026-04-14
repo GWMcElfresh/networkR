@@ -119,8 +119,14 @@ match_measurement_groups <- function(column_names, measurement_group_configurati
 
 prepare_analysis_components <- function(subject_table, configuration) {
   identifier_column <- configuration$data$idColumn
-  exogenous_variables <- unique(configuration$variables$exogenousVariables)
-  stratifier_variables <- unique(configuration$variables$stratifierVariables %||% character(0))
+  exogenous_variables <- intersect(
+    unique(configuration$variables$exogenousVariables),
+    colnames(subject_table)
+  )
+  stratifier_variables <- intersect(
+    unique(configuration$variables$stratifierVariables %||% character(0)),
+    colnames(subject_table)
+  )
   excluded_columns <- unique(c(identifier_column, exogenous_variables, stratifier_variables))
 
   measurement_columns <- colnames(subject_table)[vapply(subject_table, is.numeric, logical(1))]

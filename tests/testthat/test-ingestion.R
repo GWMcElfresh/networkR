@@ -36,3 +36,54 @@ test_that("ReadPanels reads and joins panel tables", {
   expect_true(any(grepl("^PBMC_", colnames(subject_table))))
   expect_false(anyNA(subject_table[, grep("^(Liver|PBMC)_", colnames(subject_table), value = TRUE), drop = FALSE]))
 })
+
+test_that("ReadPanels infers wide_by_tissue measurement columns when omitted", {
+  tb_file <- normalizePath(
+    file.path(testthat::test_path("..", ".."), "data", "subjectIdTable_TB.csv"),
+    winslash = "/",
+    mustWork = TRUE
+  )
+
+  configuration <- BuildConfiguration(list(
+    data = list(
+      dataPath = dirname(tb_file),
+      filePattern = "subjectIdTable_TB\\.csv",
+      inputFormat = "wide_by_tissue",
+      idColumn = "SubjectId",
+      tissueColumn = "Tissue",
+      rawTimepointColumn = "Timepoint",
+      analysisTimepointColumn = "Timepoint",
+      groupColumn = "Vaccine",
+      protectionColumn = "Probability_Protect",
+      measurementColumns = NULL,
+      inferMeasurementColumns = TRUE,
+      tissueMap = list(
+        "Lung-L" = "LungL",
+        "Lung-R" = "LungR"
+      )
+    ),
+    variables = list(
+      exogenousVariables = c("Vaccine", "Challenge", "Timepoint"),
+      stratifierVariables = c("Probability_Protect"),
+      measurementGroups = list(
+        list(
+          groupName = "lunglCells",
+          columnPrefixes = c("LungL_"),
+          tier = 2
+        ),
+        list(
+          groupName = "lungrCells",
+          columnPrefixes = c("LungR_"),
+          tier = 2
+        )
+      )
+    )
+  ))
+
+  subject_table <- ReadPanels(configuration)
+
+  expect_true(any(grepl("^LungL_TotalMyeloids$", colnames(subject_table))))
+  expect_true(any(grepl("^LungR_TotalMyeloids$", colnames(subject_table))))
+  expect_false("LungL_cDNA_ID" %in% colnames(subject_table))
+  expect_false("LungR_Probability_Protect" %in% colnames(subject_table))
+})

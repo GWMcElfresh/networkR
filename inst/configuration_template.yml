@@ -3,16 +3,26 @@ study:
   randomSeed: 42
 
 data:
+  # Directory containing panel sheets or a single wide table.
   dataPath: "data_sheets"
+  # Regex pattern for files in dataPath.
   filePattern: "[.](xlsx|csv)$"
+  # Subject-level identifier used for joins and model indexing.
   idColumn: "SubjectId"
+  # Raw source column name for timepoint. In most studies this equals analysisTimepointColumn.
   rawTimepointColumn: "TimepointLabel2"
+  # Canonical timepoint column used downstream; defaults to rawTimepointColumn when omitted.
   analysisTimepointColumn: "Timepoint"
+  # Primary treatment/group design variable.
   groupColumn: "GroupName"
+  # Primary outcome variable name; commonly also included in variables.stratifierVariables.
   protectionColumn: "Protection"
+  # Tissue/compartment column required for wide_by_tissue format.
   tissueColumn: "Tissue"
   cellTypeColumn: "CellType"
   fractionColumn: "Fraction"
+  # Explicit non-model columns retained for audit/review in generated configs.
+  ignoredColumns: []
   cellTypePrefix: "Pct_"
   tissueMap:
     liver: "Liver"
@@ -24,10 +34,12 @@ data:
       exceptTissue: "BM"
 
 variables:
+  # Analysis-time exogenous design variables. Keep group/timepoint here for clarity.
   exogenousVariables:
     - "GroupName"
     - "VaccinationStatus"
     - "Timepoint"
+  # Variables used for stratified model comparisons. Include protectionColumn when outcome-stratified.
   stratifierVariables:
     - "Protection"
   derivedVariables:
@@ -70,17 +82,27 @@ imputation:
     - "Protection"
 
 discretization:
-  method: "hartemink"
+  # "factors" uses base-R quantile binning (default, works with stagedtrees backend)
+  # "hartemink" / "quantile" require bnlearn (used with bnlearn backend)
+  method: "factors"
   initialBreaks: 20
   finalBreaks: 3
   fallbackMethod: "quantile"
   fallbackBreaks: 2
 
 structureLearning:
+  # backend: "stagedtrees" (default) or "bnlearn"
+  backend: "stagedtrees"
+  # stagedtrees algorithm: bhc, bhcr, bj, hclust, kmeans, fbhc
+  stagedtreesAlgorithm: "bhc"
+  # stagedtreesLambda: regularisation strength (0 = no penalty)
+  stagedtreesLambda: 0
   algorithms: ["hillClimbing", "tabu"]
   score: "bic"
   selectedBootstrapAlgorithm: "tabu"
   bootstrapReplicates: 1000
+  # bootstrapCores: number of parallel cores for bootstrap (1 = sequential)
+  bootstrapCores: 1
   averageNetworkThreshold: 0.4
   parameterMethod: "bayes"
   imaginarySampleSize: 1
@@ -103,6 +125,10 @@ plotting:
   themeName: "article"
   baseSize: 13
   networkLayout: "fr"
+  # Skip event-tree rendering when the implied staged event tree becomes too large.
+  cegPathLimit: 50000
+  # If true, event-tree nodes and transitions are scaled by stagedtrees sample density.
+  eventTreeShowFrequency: true
   edgeLabelThreshold: 0.2
   comparisonBarThreshold: 0.15
   groupColours:

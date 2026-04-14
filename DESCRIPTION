@@ -3,22 +3,22 @@ Title: Flexible Bayesian Network Pipelines for Experimental Studies
 Version: 0.0.0.9000
 Author: NetworkR Authors
 Maintainer: NetworkR Authors <packages@example.com>
-Description: Provides a configurable pipeline for Bayesian network structure
-    learning in factorial and repeated-measures studies. The package supports
-    panel ingestion, derived design variables, predictive mean matching
-    imputation, Hartemink discretization, blacklist construction, bootstrap
-    stability estimation, structure comparison, and ggraph-based network
-    visualization.
+Description: Provides a configurable pipeline for Bayesian network and staged
+    event tree structure learning in factorial and repeated-measures studies.
+    The package supports panel ingestion, derived design variables, predictive
+    mean matching imputation, discretization, variable-order constraint
+    construction, parallelized bootstrap stability estimation, structure
+    comparison, and ggraph-based network and event tree visualization.
+    Supports stagedtrees (default) and bnlearn as interchangeable backends.
 License: MIT + file LICENSE
 URL: https://gwmcelfresh.github.io/networkR/
 BugReports: https://github.com/GWMcElfresh/networkR/issues
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.3
 Depends:
     R (>= 4.1)
 Imports:
-    bnlearn,
     dplyr,
     egg,
     ggraph,
@@ -27,11 +27,18 @@ Imports:
     grid,
     igraph,
     mice,
+    parallel,
     readxl,
+    stagedtrees,
     tidyr,
     yaml
 Suggests:
+    bnlearn,
+    btw,
+    clue,
+    ellmer,
     knitr,
+    mcptools,
     rmarkdown,
     testthat (>= 3.0.0),
     withr

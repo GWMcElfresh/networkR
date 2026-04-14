@@ -1,3 +1,15 @@
+build_variable_order <- function(active_exogenous_variables, active_measurement_groups) {
+  # Sort measurement groups by tier ascending, then alphabetically within each tier
+  tier_values <- vapply(active_measurement_groups, `[[`, numeric(1), "tier")
+  sorted_groups <- active_measurement_groups[order(tier_values)]
+
+  measurement_columns_ordered <- unlist(lapply(sorted_groups, function(group) {
+    sort(group$columns)
+  }))
+
+  c(sort(active_exogenous_variables), measurement_columns_ordered)
+}
+
 build_measurement_to_exogenous_blacklist <- function(measurement_columns, active_exogenous_variables) {
   if (length(measurement_columns) == 0 || length(active_exogenous_variables) == 0) {
     return(data.frame(from = character(0), to = character(0)))
@@ -72,6 +84,7 @@ BuildBlacklist <- function(discretizationResult, configuration) {
 
   list(
     blacklist = blacklist,
+    variableOrder = build_variable_order(active_exogenous_variables, active_measurement_groups),
     activeExogenousVariables = active_exogenous_variables,
     measurementGroups = active_measurement_groups,
     measurementColumns = active_measurement_columns

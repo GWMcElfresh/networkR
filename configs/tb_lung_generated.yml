@@ -1,0 +1,125 @@
+study:
+  studyName: "TB Lung Bayesian Network Analysis"
+  randomSeed: 42
+
+data:
+  dataPath: "../data"
+  filePattern: "subjectIdTable_TB\\.csv"
+  inputFormat: "wide_by_tissue"
+  idColumn: "SubjectId"
+  tissueColumn: "Tissue"
+  rawTimepointColumn: "Timepoint"
+  analysisTimepointColumn: "Timepoint"
+  groupColumn: "Vaccine"
+  protectionColumn: "Probability_Protect"
+  tissueMap:
+    "Lung-L": "LungL"
+    "Lung-R": "LungR"
+  # Excluded columns:
+  #   cDNA_ID        <e2><80><94> per-sample lab ID, not analytically relevant
+  #   LungPathScore  <e2><80><94> integer pathology score; add to measurementColumns if desired
+  #   CFU_Homogenate <e2><80><94> bacterial burden; add to exogenousVariables or measurementColumns if desired
+  #   Disease_Severity <e2><80><94> composite severity score; add to measurementColumns if desired
+  #   Probability_Protect <e2><80><94> used as protectionColumn
+  inferMeasurementColumns: no
+  measurementColumns:
+    - "PercentageM1Myeloids"
+    - "TotalMyeloids"
+    - "PercentageActivatedCD8s"
+    - "PercentageActivatedCD4s"
+    - "Number_Of_CD8s"
+    - "Number_Of_CD4s"
+    - "Total_Bcells"
+    - "CD40_CD69_Pos_B"
+    - "Plasma_cells"
+    - "GC_B"
+    - "CD40Negative_B"
+    - "PercentageAlvMacrophage"
+    - "BALT"
+    - "Intermediate"
+    - "MCore1"
+    - "Necrotic_Core"
+    - "LymphT"
+    - "EarlyGran"
+    - "LymphB"
+    - "MCore2"
+
+variables:
+  exogenousVariables:
+    - "Vaccine"
+    - "Challenge"
+    - "Timepoint"
+  stratifierVariables:
+    - "Probability_Protect"
+  derivedVariables: []
+  measurementGroups:
+    - groupName: "lunglCells"
+      columnPrefixes:
+        - "LungL_"
+      tier: 2
+      fillColour: "lightcoral"
+      borderColour: "firebrick4"
+    - groupName: "lungrCells"
+      columnPrefixes:
+        - "LungR_"
+      tier: 2
+      fillColour: "lightskyblue"
+      borderColour: "steelblue4"
+
+imputation:
+  method: "pmm"
+  numberOfImputations: 5
+  maximumIterations: 20
+  completeDataAction: 1
+  excludedPredictors:
+    - "SubjectId"
+    - "Probability_Protect"
+
+discretization:
+  method: "factors"
+  initialBreaks: 20
+  finalBreaks: 3
+  fallbackMethod: "quantile"
+  fallbackBreaks: 2
+
+structureLearning:
+  backend: "stagedtrees"
+  stagedtreesAlgorithm: "bhc"
+  stagedtreesLambda: 0
+  algorithms:
+    - "hillClimbing"
+    - "tabu"
+  score: "bic"
+  selectedBootstrapAlgorithm: "tabu"
+  bootstrapReplicates: 1000
+  bootstrapCores: 1
+  averageNetworkThreshold: 0.4
+  parameterMethod: "bayes"
+  imaginarySampleSize: 1
+
+stratifications: []
+
+plotting:
+  themeName: "article"
+  baseSize: 13
+  networkLayout: "fr"
+  edgeLabelThreshold: 0.2
+  comparisonBarThreshold: 0.15
+  groupColours:
+    exogenous:
+      fillColour: "mistyrose"
+      borderColour: "firebrick"
+    defaultMeasurement:
+      fillColour: "grey85"
+      borderColour: "grey30"
+  save:
+    width: 13
+    height: 8
+    dpi: 300
+    bg: "white"
+    device: "png"
+
+output:
+  savePlots: false
+  outputDirectory: "outputs"
+
